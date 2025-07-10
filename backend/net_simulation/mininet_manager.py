@@ -81,6 +81,8 @@ def get_current_topology():
 
 def rebuild_topology(intent_text: str) -> str:
     agent = IntentAgent()
+    intent_json = agent.intent_to_instruction(intent_text)
+
     global global_net
     cleanup()
     # 1. 如果已有拓扑，先销毁它
@@ -92,7 +94,7 @@ def rebuild_topology(intent_text: str) -> str:
             print(f"销毁旧拓扑失败: {e}")
 
     # 2. 调用大语言模型生成新拓扑代码
-    code = agent.intent_to_code(intent_text)
+    code = build_mininet_code_from_json(intent_json)
 
     # 3. 执行生成的代码，创建新的global_net实例
     exec_globals = {}
@@ -119,3 +121,41 @@ def stop_topology() -> str:
         return "拓扑已成功停止"
     except Exception as e:
         return f"停止拓扑失败: {str(e)}"
+
+# 从json中生成控制mininet的代码
+def build_mininet_code_from_json(data: dict) -> str:
+    hosts = data.get("hosts", [])
+    switches = data.get("switches", [])
+    links = data.get("links", [])
+    controller = data.get("controller", {"type": "RemoteController", "ip": "127.0.0.1", "port": 6633})
+
+    lines = [
+        "from mininet.net import Mininet",
+        "from mininet.cli import CLI",
+        "from mininet.log import setLogLevel",
+        "from mininet.node import RemoteController",
+        "",
+        "setLogLevel('info')",
+        "",
+        f"net = Mininet(controller=RemoteController)",
+        f"c0 = net.addController('c0', controller=RemoteController, ip='{controller['ip']}', port={controller['port']})",
+    ]
+
+    for h in hosts:
+        lines.append(f"{h} = net.addHost('{h}')")
+
+    for s in switches:
+        lines.append(f"{s} = net.addSwitch('{s}')")
+
+    for link in links:
+        lines.append(f"net.addLink({link['src']}, {link['dst']})")
+
+    lines += [
+        "net.start()",
+        "# 运行 CLI 已禁用，为了非阻塞执行",
+        "# CLI(net)",
+        "# 你可以用 net.pingAll() 替代命令行测试",
+        ""
+    ]
+
+    return "\n".join(lines)

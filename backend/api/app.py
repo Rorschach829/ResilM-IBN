@@ -2,7 +2,7 @@ from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
 from backend.agents.intent_agent import IntentAgent
 from backend.net_simulation.mininet_manager import run_mininet_code, get_current_topology, stop_topology,rebuild_topology
-
+from backend.net_simulation.instruction_executor import execute_instruction
 
 app = Flask(__name__, template_folder="/data/gjw/Meta-IBN/backend/templates")
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -18,19 +18,24 @@ def handle_intent():
     data = request.json
     intent_text = data.get("intent", "")
     if not intent_text:
-        return jsonify({"error": "Intent text required"}), 400
+        return jsonify({"error": "意图内容不能为空"}), 400
 
     try:
-        code = rebuild_topology(intent_text)
+        instruction = intent_agent.intent_to_instruction(intent_text)
+        print("解析后的指令:", instruction)
     except Exception as e:
-        return jsonify({"error": f"LLM调用失败: {str(e)}"}), 500
+        return jsonify({"error": f"意图解析失败: {str(e)}"}), 500
 
     try:
-        output = run_mininet_code(code)
+        output = execute_instruction(instruction)
     except Exception as e:
-        return jsonify({"error": f"Mininet运行失败: {str(e)}"}), 500
+        return jsonify({"error": f"指令执行失败: {str(e)}"}), 500
 
-    return jsonify({"message": "拓扑创建成功", "code": code, "output": output})
+    return jsonify({
+        "message": "✅ 指令执行成功",
+        "instruction": instruction,
+        "output": output
+    })
 
 @app.route("/topology", methods=["GET"])
 def topology():
