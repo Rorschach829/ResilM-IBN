@@ -59,6 +59,7 @@
       <h3>网络拓扑图</h3>
       <svg id="network"></svg>
       <button onclick="loadTopology()">🔄 刷新拓扑</button>
+      <button onclick="stopTopology()">🛑 退出当前拓扑</button>
     </div>
 
     <div id="right-panel">
@@ -130,6 +131,49 @@
 
       document.getElementById("batch-response").textContent = results.join("\n");
     }
+    
+    async function stopTopology() {
+      const confirmed = confirm("你确定要退出并删除当前拓扑吗？");
+      if (!confirmed) return;
+
+      try {
+        const res = await fetch(serverUrl + "/stop", {
+          method: "POST"
+        });
+
+        const data = await res.json();
+        alert("✅ 拓扑删除结果: " + data.message);
+
+        // 删除成功后刷新图
+        loadTopology();
+      } catch (err) {
+        alert("❌ 删除失败：" + err);
+      }
+    }
+
+    function drag(simulation) {
+      function dragstarted(event, d) {
+        if (!event.active) simulation.alphaTarget(0.3).restart();
+        d.fx = d.x;
+        d.fy = d.y;
+      }
+
+      function dragged(event, d) {
+        d.fx = event.x;
+        d.fy = event.y;
+      }
+
+      function dragended(event, d) {
+        if (!event.active) simulation.alphaTarget(0);
+        d.fx = null;
+        d.fy = null;
+      }
+
+      return d3.drag()
+        .on("start", dragstarted)
+        .on("drag", dragged)
+        .on("end", dragended);
+    } 
 
     async function loadTopology() {
       const res = await fetch(serverUrl + "/topology");
@@ -167,25 +211,30 @@
         .join("line")
         .attr("stroke-width", 2);
 
-      const node = g.append("g")
-        .selectAll("circle")
+      // 创建节点容器 <g>
+      const nodeGroup = g.append("g")
+        .selectAll("g")
         .data(nodes)
-        .join("circle")
-        .attr("r", 20)
-        .attr("fill", d => d.type === "switch" ? "#1f77b4" : "#2ca02c")
-        .attr("stroke", "#fff")
-        .attr("stroke-width", 1.5)
+        .join("g")
         .call(drag(simulation));
 
-      const label = g.append("g")
-        .selectAll("text")
-        .data(nodes)
-        .join("text")
+      // 根据类型插入图片
+      nodeGroup.append("image")
+        .attr("xlink:href", d => d.type === "switch" ? "/static/img/switch.png" : "/static/img/host.png")
+        .attr("width", 40)
+        .attr("height", 40)
+        .attr("x", -20)
+        .attr("y", -20);
+
+      // 添加标签
+      nodeGroup.append("text")
         .text(d => d.id)
-        .attr("font-size", 13)
+        .attr("y", 30)
         .attr("text-anchor", "middle")
+        .attr("font-size", 13)
         .attr("fill", "#000");
 
+      // Tick 更新位置
       simulation.on("tick", () => {
         link
           .attr("x1", d => d.source.x)
@@ -193,33 +242,11 @@
           .attr("x2", d => d.target.x)
           .attr("y2", d => d.target.y);
 
-        node
-          .attr("cx", d => d.x)
-          .attr("cy", d => d.y);
-
-        label
-          .attr("x", d => d.x)
-          .attr("y", d => d.y + 30);  // 标签在下方
+        nodeGroup
+          .attr("transform", d => `translate(${d.x},${d.y})`);
       });
-
-      function drag(simulation) {
-        return d3.drag()
-          .on("start", event => {
-            if (!event.active) simulation.alphaTarget(0.3).restart();
-            event.subject.fx = event.subject.x;
-            event.subject.fy = event.subject.y;
-          })
-          .on("drag", event => {
-            event.subject.fx = event.x;
-            event.subject.fy = event.y;
-          })
-          .on("end", event => {
-            if (!event.active) simulation.alphaTarget(0);
-            event.subject.fx = null;
-            event.subject.fy = null;
-          });
-      }
     }
+
 
     loadTopology();
   </script>

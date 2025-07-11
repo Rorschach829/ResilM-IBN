@@ -1,6 +1,9 @@
 import json
 import backend.net_simulation.mininet_manager as mm  # ✅ 用模块别名导入
 from backend.net_simulation.ryu_controller import send_flow_mod
+import requests
+from backend.utils.ryu_utils import get_all_switch_ids
+
 
 def execute_instruction(instruction: dict) -> str:
     action = instruction.get("action")
@@ -48,7 +51,41 @@ def execute_instruction(instruction: dict) -> str:
 
         return f"{src_name} {'可以✅' if success else '无法❌'} ping 通 {target_host or target_ip}"
 
+    elif action == "delete_flowtable":
+        switches = instruction.get("switches", [])
+        extra = instruction.get("extra", {})
+        match = extra.get("match", {})
 
+        if not switches:
+            return "❌ 错误：未指定交换机"
+
+        for sw in switches:
+            if sw == "all":
+                # 查询所有交换机 ID
+                sw_list = get_all_switch_ids()
+            else:
+                sw_list = [int(sw.replace("s", ""))]
+
+            for dpid in sw_list:
+                payload = {
+                    "dpid": dpid,
+                    "match": match
+                }
+                try:
+                    resp = requests.post("http://localhost:8081/stats/flowentry/delete", json=payload)
+                    if resp.status_code != 200:
+                        return f"❌ 删除流表失败，交换机 {dpid} 返回码 {resp.status_code}"
+                except Exception as e:
+                    return f"❌ 删除流表失败: {e}"
+
+        return "✅ 流表删除成功"
+
+    elif action == "shutdown_topology":
+        if mm.global_net:
+            mm.global_net.stop()
+            mm.global_net.delete()
+            mm.global_net = None
+        return "✅ 拓扑已关闭"
 
     elif action == "delete_host":
         if not mm.global_net:
@@ -59,13 +96,6 @@ def execute_instruction(instruction: dict) -> str:
             return f"❌ 节点 {target} 不存在"
         mm.global_net.delNode(node)
         return f"✅ 已删除节点 {target}"
-
-    elif action == "shutdown_topology":
-        if mm.global_net:
-            mm.global_net.stop()
-            mm.global_net.delete()
-            mm.global_net = None
-        return "✅ 拓扑已关闭"
 
     else:
         return f"❌ 未识别的指令类型: {action}"

@@ -5,7 +5,9 @@ from backend.net_simulation.mininet_manager import run_mininet_code, get_current
 from backend.net_simulation.instruction_executor import execute_instruction
 import backend.net_simulation.mininet_manager as mm
 
-app = Flask(__name__, template_folder="/data/gjw/Meta-IBN/backend/templates")
+app = Flask(__name__, 
+            template_folder="/data/gjw/Meta-IBN/frontend/templates", 
+            static_folder="/data/gjw/Meta-IBN/frontend/static")
 CORS(app, resources={r"/*": {"origins": "*"}})
 
 intent_agent = IntentAgent()
