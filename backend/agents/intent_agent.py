@@ -1,48 +1,30 @@
 from openai import OpenAI
 import json
-
+import os
 client = OpenAI(api_key="sk-692005762cca46ac9faf28703ae6efe0", base_url="https://api.deepseek.com")
 
 class IntentAgent:
-    def __init__(self):
-        pass
+    def __init__(self, prompt_path="/data/gjw/Meta-IBN/backend/agents/prompts/intent_agent.txt"):
+        self.prompt_path = prompt_path
 
+    def load_prompt_template(self) -> str:
+        """
+        从本地文本文件加载提示词模板
+        """
+        if not os.path.exists(self.prompt_path):
+            raise FileNotFoundError(f"提示词文件不存在: {self.prompt_path}")
+        with open(self.prompt_path, "r", encoding="utf-8") as f:
+            return f.read()
+
+    def build_prompt(self, intent_text: str) -> str:
+        """
+        替换模板中的 {intent_text} 变量
+        """
+        template = self.load_prompt_template()
+        return template.format(intent_text=intent_text)
     def intent_to_instruction(self, intent_text: str) -> dict:
-        prompt = f"""
-你是一个 SDN 网络专家，请根据用户输入的意图，提取并返回结构化指令（JSON格式），以便后端执行。
 
-输出要求：
-- 仅输出纯 JSON（不要包含任何 markdown 标记或解释说明）。
-- 可用字段包括：
-  action: create_topology | install_flowtable | delete_flowtable | ping_test
-  hosts: ["h1", "h2"]
-  switches: ["s1"]
-  links: [{"src": "h1", "dst": "s1"}]
-  controller: {
-    "type": "RemoteController",
-    "ip": "127.0.0.1",
-    "port": 6633
-  }
-  extra: 
-    - 对于 install_flowtable，必须包含：
-      - match: {"nw_src": "IP1", "nw_dst": "IP2"}  # 匹配规则
-      - actions: "DENY" | "ALLOW"  # 动作类型
-      - priority: 整数（十进制）
-    - 对于 delete_flowtable，extra 可以是：
-      - 清除某条规则：提供 match 字段，例如 {"nw_src": "10.0.0.1", "nw_dst": "10.0.0.2", "dl_type": "2048"}
-      - 清空整个交换机：match 字段留空，例如 {}
-    - 对于 ping_test，extra 字段中必须包含：
-      - source: 源主机名（如 "h1"）
-      - target: 目标主机 IP（如 "10.0.0.2"）
-
-注意事项：
-- 所有数值必须是十进制，禁止出现十六进制（如 0x0800），否则将解析失败。
-- 输出必须是符合 JSON 标准格式的对象，不能包含多余解释、代码注释或 markdown。
-- 禁止输出 markdown 标记（例如 ```json ），只返回 JSON 对象本体。
-
-用户意图：
-{intent_text}
-"""
+        prompt = self.build_prompt(intent_text)
         messages = [
             {"role": "system", "content": "你是网络拓扑与控制指令生成助手，只输出JSON指令。"},
             {"role": "user", "content": prompt}

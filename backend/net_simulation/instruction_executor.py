@@ -53,8 +53,10 @@ def execute_instruction(instruction: dict) -> str:
 
     elif action == "delete_flowtable":
         switches = instruction.get("switches", [])
+
+        # 支持 match 字段既可能在 extra 中，也可能在顶层
         extra = instruction.get("extra", {})
-        match = extra.get("match", {})
+        match = extra.get("match") or instruction.get("match", {})
 
         if not switches:
             return "❌ 错误：未指定交换机"
