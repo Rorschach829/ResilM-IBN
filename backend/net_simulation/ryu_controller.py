@@ -1,9 +1,20 @@
 import requests
 
-RYU_REST_API = "http://localhost:8080"
+RYU_REST_API = "http://localhost:8081"
 
-def send_flow_mod(flow_rule: dict):
-    # 这里用REST API调用Ryu控制器，示例代码
-    url = f"{RYU_REST_API}/stats/flowentry/add"
-    response = requests.post(url, json=flow_rule)
-    return response.status_code == 200
+def send_flow_mod(flow_rule: dict) -> bool:
+    """ 发送流表到Ryu控制器 """
+    try:
+        url = f"{RYU_REST_API}/stats/flowentry/add"
+        payload = {
+            "dpid": flow_rule["dpid"],
+            "priority": flow_rule["priority"],
+            "match": flow_rule["match"],
+            "actions": flow_rule["actions"],  # DENY时为[]
+            "command": "add"
+        }
+        response = requests.post(url, json=payload)
+        return response.status_code == 200
+    except Exception as e:
+        print(f"Ryu API调用失败: {e}")
+        return False

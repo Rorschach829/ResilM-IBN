@@ -104,19 +104,28 @@ function sendIntent() {
   })
     .then(res => res.json())
     .then(data => {
+      let resultText = "";
       if (data.error) {
-        document.getElementById("response").textContent = "❌ 错误：" + data.error;
+          resultText = "❌ 错误：" + data.error;
       } else {
-        document.getElementById("response").textContent =
-          "✅ 生成代码:\n" + data.code + "\n\n🖥️ 运行输出:\n" + data.output;
-
-        // 重新加载拓扑图
-        loadTopology();
+          resultText = `✅ 指令类型: ${data.instruction.action}\n`;
+          
+          if (typeof data.output === 'object') {
+              // 处理ping_test的详细结果
+              resultText += `测试结果: ${data.output.interpretation}\n`;
+              resultText += `原始输出:\n${data.output.raw_output}`;
+          } else {
+              // 其他指令的普通输出
+              resultText += `执行结果: ${data.output}`;
+          }
+          
+          // 自动刷新拓扑图（对于影响拓扑的操作）
+          if (['create_topology', 'install_flowtable'].includes(data.instruction.action)) {
+              loadTopology();
+          }
       }
-    })
-    .catch(err => {
-      document.getElementById("response").textContent = "❌ 请求失败：" + err;
-    });
+      document.getElementById("response").textContent = resultText;
+  });
 }
 
 // 页面加载时自动加载当前拓扑图

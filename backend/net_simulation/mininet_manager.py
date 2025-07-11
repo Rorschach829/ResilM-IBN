@@ -1,9 +1,7 @@
 import tempfile
 import traceback
-from backend.agents.intent_agent import IntentAgent
 from mininet.clean import cleanup
-
-
+from backend.agents.intent_agent import IntentAgent
 
 global_net = None  # 全局保存net实例
 
@@ -12,14 +10,13 @@ def run_mininet_code(code: str) -> str:
 
     try:
         exec_globals = {}
-        # 执行LLM生成的代码（代码中需包含 net = Mininet(...) 和 net.start()，但不要调用 net.stop()）
+        # 执行 LLM 生成的 Mininet 代码（需包含 net = Mininet(...)）
         exec(code, exec_globals)
 
-        # 检查是否成功创建了 net 对象
         if "net" not in exec_globals:
             return "错误：代码中未定义 net 对象"
-        
-        # 如果之前有运行中的拓扑，先停止清理
+
+        # 如果已有运行中的拓扑，先停止
         if global_net:
             try:
                 global_net.stop()
@@ -34,14 +31,6 @@ def run_mininet_code(code: str) -> str:
         return f"执行错误: {str(e)}\n{tb}"
 
 def get_current_topology():
-    """
-    从 global_net 中获取拓扑信息，转换成前端需要的 JSON 结构。
-    返回格式示例：
-    {
-      "nodes": [{"data": {"id": "h1", "type": "host"}}, ...],
-      "edges": [{"data": {"source": "h1", "target": "s1"}}, ...]
-    }
-    """
     global global_net
     if not global_net:
         return {"nodes": [], "edges": []}
@@ -49,43 +38,35 @@ def get_current_topology():
     nodes = []
     edges = []
 
-    # 添加所有主机和交换机节点
     for host in global_net.hosts:
         nodes.append({"data": {"id": host.name, "type": "host"}})
     for switch in global_net.switches:
         nodes.append({"data": {"id": switch.name, "type": "switch"}})
 
-    # 添加所有链路边
     for link in global_net.links:
         try:
             intf1 = link.intf1
             intf2 = link.intf2
 
-            # 安全判断接口和接口节点是否存在
-            if intf1 is None or intf2 is None:
-                print(f"Warning: Link {link} has None interface, skipped")
-                continue
-            if intf1.node is None or intf2.node is None:
-                print(f"Warning: Link {link} has interface with None node, skipped")
+            if intf1 is None or intf2 is None or intf1.node is None or intf2.node is None:
+                print(f"Warning: 无效链路 {link}，跳过")
                 continue
 
             src = intf1.node.name
             dst = intf2.node.name
-
             edges.append({"data": {"source": src, "target": dst}})
         except Exception as e:
-            print(f"Error processing link {link}: {e}")
+            print(f"处理链路出错: {e}")
             continue
 
     return {"nodes": nodes, "edges": edges}
 
-def rebuild_topology(intent_text: str) -> str:
-    agent = IntentAgent()
-    intent_json = agent.intent_to_instruction(intent_text)
-
+def rebuild_topology(intent_json: dict) -> str:
     global global_net
+
     cleanup()
-    # 1. 如果已有拓扑，先销毁它
+
+    # 若已有拓扑，先销毁
     if global_net:
         try:
             global_net.stop()
@@ -93,22 +74,18 @@ def rebuild_topology(intent_text: str) -> str:
         except Exception as e:
             print(f"销毁旧拓扑失败: {e}")
 
-    # 2. 调用大语言模型生成新拓扑代码
     code = build_mininet_code_from_json(intent_json)
 
-    # 3. 执行生成的代码，创建新的global_net实例
     exec_globals = {}
     try:
         exec(code, exec_globals)
-        # 假设代码里有个变量net是Mininet实例
-        new_net = exec_globals.get("net")
-        if not new_net:
-            raise Exception("生成代码中没有定义 net 实例")
-        global_net = new_net
+        global_net = exec_globals.get("net")
+        if not global_net:
+            raise Exception("生成的代码中未创建 net 实例")
+        return "✅ 拓扑创建成功"
     except Exception as e:
-        raise Exception(f"重建拓扑失败: {e}")
-
-    return code
+        global_net = None
+        return f"❌ 拓扑创建失败: {str(e)}"
 
 def stop_topology() -> str:
     global global_net
@@ -122,7 +99,6 @@ def stop_topology() -> str:
     except Exception as e:
         return f"停止拓扑失败: {str(e)}"
 
-# 从json中生成控制mininet的代码
 def build_mininet_code_from_json(data: dict) -> str:
     hosts = data.get("hosts", [])
     switches = data.get("switches", [])
@@ -141,20 +117,22 @@ def build_mininet_code_from_json(data: dict) -> str:
         f"c0 = net.addController('c0', controller=RemoteController, ip='{controller['ip']}', port={controller['port']})",
     ]
 
-    for h in hosts:
-        lines.append(f"{h} = net.addHost('{h}')")
+    # for h in hosts:
+    #     lines.append(f"{h} = net.addHost('{h}')")
+
+    # 添加主机并分配ip地址
+    for i, h in enumerate(hosts):
+        ip = f"10.0.0.{i + 1}"
+        lines.append(f"{h} = net.addHost('{h}', ip='{ip}')")
 
     for s in switches:
         lines.append(f"{s} = net.addSwitch('{s}')")
-
     for link in links:
         lines.append(f"net.addLink({link['src']}, {link['dst']})")
 
     lines += [
         "net.start()",
-        "# 运行 CLI 已禁用，为了非阻塞执行",
-        "# CLI(net)",
-        "# 你可以用 net.pingAll() 替代命令行测试",
+        "# CLI(net)  # 已禁用，为了非阻塞执行",
         ""
     ]
 

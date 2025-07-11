@@ -3,6 +3,7 @@ from flask_cors import CORS
 from backend.agents.intent_agent import IntentAgent
 from backend.net_simulation.mininet_manager import run_mininet_code, get_current_topology, stop_topology,rebuild_topology
 from backend.net_simulation.instruction_executor import execute_instruction
+import backend.net_simulation.mininet_manager as mm
 
 app = Flask(__name__, template_folder="/data/gjw/Meta-IBN/backend/templates")
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -17,6 +18,8 @@ def index():
 def handle_intent():
     data = request.json
     intent_text = data.get("intent", "")
+
+    # 意图为空则直接返回
     if not intent_text:
         return jsonify({"error": "意图内容不能为空"}), 400
 
@@ -34,18 +37,23 @@ def handle_intent():
     return jsonify({
         "message": "✅ 指令执行成功",
         "instruction": instruction,
-        "output": output
+        "output": output,
+        "success": True if not isinstance(output, str) else "error" not in output.lower()
     })
 
+# 获取当前拓扑
 @app.route("/topology", methods=["GET"])
 def topology():
     topo_json = get_current_topology()
+    print("[DEBUG] 当前 global_net:", mm.global_net)
     return jsonify(topo_json)
 
+# 删除拓扑
 @app.route("/stop", methods=["POST"])
 def stop():
     message = stop_topology()
     return jsonify({"message": message})
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
+
