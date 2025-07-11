@@ -45,13 +45,8 @@ def execute_instruction(instruction: dict) -> str:
         # 此处使用 IP 执行 ping，而不是主机名
         result = src_host.cmd(f"ping -c 3 {target_ip}")
         success = "3 received" in result
-        # return json.dumps({
-        #     "success": success,
-        #     "raw_output": result,
-        #     "interpretation": f"{'可以' if success else '无法'}从 {src_name} ping 通 {target_ip}"
-        # })
 
-        return f"{src_name} {'可以' if success else '无法'} ping 通 {target_host or target_ip}"
+        return f"{src_name} {'可以✅' if success else '无法❌'} ping 通 {target_host or target_ip}"
 
 
 

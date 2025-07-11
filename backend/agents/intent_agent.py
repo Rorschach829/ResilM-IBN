@@ -30,7 +30,8 @@ class IntentAgent:
       - priority: 数字  # 流表优先级
     对于 ping_test，extra 字段中必须包含 source（主机名）和 target（目标主机的 IP 地址，例如 10.0.0.1），不要使用主机名。
 
-
+注意：
+- 注意：所有数值必须是十进制，禁止出现 0x0800 这样的十六进制形式，否则会解析失败。
 
 只返回符合 JSON 格式的字符串，不要多余解释和代码，也不要 Markdown 格式。
 

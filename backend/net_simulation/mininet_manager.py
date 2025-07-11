@@ -64,7 +64,7 @@ def get_current_topology():
 def rebuild_topology(intent_json: dict) -> str:
     global global_net
 
-    cleanup()
+    # cleanup()
 
     # 若已有拓扑，先销毁
     if global_net:
@@ -113,7 +113,7 @@ def build_mininet_code_from_json(data: dict) -> str:
         "",
         "setLogLevel('info')",
         "",
-        f"net = Mininet(controller=RemoteController)",
+        f"net = Mininet(controller=None)",
         f"c0 = net.addController('c0', controller=RemoteController, ip='{controller['ip']}', port={controller['port']})",
     ]
 
