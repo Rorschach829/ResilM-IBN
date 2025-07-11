@@ -1,136 +1,227 @@
 <!DOCTYPE html>
-<html lang="zh">
+<html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <title>Mininet意图驱动网络仿真</title>
-  <script src="https://unpkg.com/cytoscape@3.23.0/dist/cytoscape.min.js"></script>
+  <title>意图驱动网络配置系统</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
   <style>
-    body { font-family: Arial, sans-serif; margin: 10px; }
-    #topology { width: 100%; height: 400px; border: 1px solid #aaa; }
-    #input-area { margin-top: 10px; }
-    button { padding: 8px 16px; margin-top: 5px; }
-    textarea { font-family: monospace; }
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+    }
+
+    #main-layout {
+      display: flex;
+      gap: 30px;
+      align-items: flex-start;
+    }
+
+    #left-panel {
+      flex: 1;
+      min-width: 600px;
+    }
+
+    #right-panel {
+      flex: 1;
+      max-width: 600px;
+    }
+
+    textarea {
+      width: 100%;
+      margin-bottom: 10px;
+    }
+
+    button {
+      margin-right: 10px;
+      margin-top: 5px;
+    }
+
+    pre {
+      background: #f4f4f4;
+      padding: 10px;
+      white-space: pre-wrap;
+      border: 1px solid #ddd;
+    }
+
+    svg {
+      border: 1px solid #ccc;
+      width: 100%;
+      height: 500px;
+      display: block;
+    }
   </style>
 </head>
 <body>
+  <h1>意图驱动网络配置系统</h1>
 
-<h2>网络拓扑可视化与意图输入</h2>
+  <div id="main-layout">
+    <div id="left-panel">
+      <h3>网络拓扑图</h3>
+      <svg id="network"></svg>
+      <button onclick="loadTopology()">🔄 刷新拓扑</button>
+    </div>
 
-<!-- 拓扑展示区 -->
-<div id="topology"></div>
+    <div id="right-panel">
+      <h3>批量自定义意图测试</h3>
+      <div id="custom-intent-list">
+        <textarea rows="2" placeholder="在此输入一条意图，例如：创建包含 s1、h1、h2 的拓扑"></textarea>
+      </div>
+      <button onclick="addCustomIntent()">➕ 添加一条意图</button>
+      <button onclick="sendAllIntents()">🚀 发送所有意图</button>
+      <pre id="batch-response"></pre>
+    </div>
+  </div>
 
-<!-- 意图输入区 -->
-<div id="input-area">
-  <textarea id="intent-input" rows="3" style="width: 100%;" placeholder="请输入网络意图，例如：创建一个包含 s1, h1, h2 的拓扑"></textarea><br />
-  <button onclick="sendIntent()">发送意图</button>
-  <button onclick="stopTopology()">退出当前拓扑</button>
-  <pre id="response" style="background:#eee; padding:10px; white-space: pre-wrap;"></pre>
-</div>
+  <script>
+    const serverUrl = "http://localhost:5000";
 
-<script>
-const serverUrl = "http://10.20.33.108:5000";  // ← 修改为你的后端 IP
+    function addCustomIntent() {
+      const container = document.getElementById("custom-intent-list");
+      const textarea = document.createElement("textarea");
+      textarea.rows = 2;
+      textarea.placeholder = "新的意图...";
+      container.appendChild(textarea);
+    }
 
-// 初始化 Cytoscape 画布
-let cy = cytoscape({
-  container: document.getElementById("topology"),
-  elements: [],
-  style: [
-    {
-      selector: "node",
-      style: {
-        "background-color": ele => ele.data("type") === "switch" ? "#FF851B" : "#0074D9",
-        label: "data(id)",
-        color: "#fff",
-        "text-valign": "center",
-        "text-halign": "center",
-        "font-size": 14
+    async function sendAllIntents() {
+      const results = [];
+      const inputs = document.querySelectorAll("#custom-intent-list textarea");
+
+      for (let i = 0; i < inputs.length; i++) {
+        const intent = inputs[i].value.trim();
+        if (!intent) continue;
+
+        inputs[i].style.backgroundColor = "#ffffcc";
+
+        try {
+          const res = await fetch(serverUrl + "/intent", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ intent })
+          });
+
+          const data = await res.json();
+          const now = new Date().toLocaleString('zh-CN', { hour12: false });
+
+          let text = `✅ 第 ${i + 1} 条意图：${intent}\n`;
+
+          if (data.error) {
+            text += `❌ 错误: ${data.error}\n时间: ${now}\n\n`;
+            inputs[i].style.backgroundColor = "#fdd";
+          } else {
+            const resultText = typeof data.output === 'object' && data.output?.interpretation
+              ? data.output.interpretation
+              : data.output;
+
+            text += `类型: ${data.instruction.action}\n结果: ${resultText}\n时间: ${now}\n\n`;
+            inputs[i].style.backgroundColor = "#d2f8d2";
+
+            if (["create_topology", "install_flowtable"].includes(data.instruction.action)) {
+              loadTopology();
+            }
+          }
+
+          results.push(text);
+        } catch (err) {
+          results.push(`❌ 第 ${i + 1} 条意图请求失败：${err}\n\n`);
+          inputs[i].style.backgroundColor = "#fdd";
+        }
       }
-    },
-    {
-      selector: "edge",
-      style: {
-        width: 2,
-        "line-color": "#aaa",
-        "target-arrow-color": "#aaa",
-        "target-arrow-shape": "triangle"
+
+      document.getElementById("batch-response").textContent = results.join("\n");
+    }
+
+    async function loadTopology() {
+      const res = await fetch(serverUrl + "/topology");
+      const data = await res.json();
+      const nodes = data.nodes || [];
+      const links = data.links || [];
+
+      const svg = d3.select("#network");
+      svg.selectAll("*").remove();
+
+      const width = svg.node().clientWidth;
+      const height = svg.node().clientHeight;
+
+      const g = svg.append("g");
+
+      // 缩放支持
+      svg.call(
+        d3.zoom()
+          .scaleExtent([0.5, 2])
+          .on("zoom", (event) => {
+            g.attr("transform", event.transform);
+          })
+      );
+
+      const simulation = d3.forceSimulation(nodes)
+        .force("link", d3.forceLink(links).id(d => d.id).distance(100))
+        .force("charge", d3.forceManyBody().strength(-300))
+        .force("center", d3.forceCenter(width / 2, height / 2));
+
+      const link = g.append("g")
+        .attr("stroke", "#999")
+        .attr("stroke-opacity", 0.6)
+        .selectAll("line")
+        .data(links)
+        .join("line")
+        .attr("stroke-width", 2);
+
+      const node = g.append("g")
+        .selectAll("circle")
+        .data(nodes)
+        .join("circle")
+        .attr("r", 20)
+        .attr("fill", d => d.type === "switch" ? "#1f77b4" : "#2ca02c")
+        .attr("stroke", "#fff")
+        .attr("stroke-width", 1.5)
+        .call(drag(simulation));
+
+      const label = g.append("g")
+        .selectAll("text")
+        .data(nodes)
+        .join("text")
+        .text(d => d.id)
+        .attr("font-size", 13)
+        .attr("text-anchor", "middle")
+        .attr("fill", "#000");
+
+      simulation.on("tick", () => {
+        link
+          .attr("x1", d => d.source.x)
+          .attr("y1", d => d.source.y)
+          .attr("x2", d => d.target.x)
+          .attr("y2", d => d.target.y);
+
+        node
+          .attr("cx", d => d.x)
+          .attr("cy", d => d.y);
+
+        label
+          .attr("x", d => d.x)
+          .attr("y", d => d.y + 30);  // 标签在下方
+      });
+
+      function drag(simulation) {
+        return d3.drag()
+          .on("start", event => {
+            if (!event.active) simulation.alphaTarget(0.3).restart();
+            event.subject.fx = event.subject.x;
+            event.subject.fy = event.subject.y;
+          })
+          .on("drag", event => {
+            event.subject.fx = event.x;
+            event.subject.fy = event.y;
+          })
+          .on("end", event => {
+            if (!event.active) simulation.alphaTarget(0);
+            event.subject.fx = null;
+            event.subject.fy = null;
+          });
       }
     }
-  ],
-  layout: { name: "circle" }
-});
 
-// 加载后端的拓扑图数据
-function loadTopology() {
-  fetch(serverUrl + "/topology")
-    .then(res => res.json())
-    .then(data => {
-      cy.elements().remove();
-      cy.add(data.nodes);
-      cy.add(data.edges);
-      cy.layout({ name: "circle" }).run();
-    })
-    .catch(err => {
-      console.error("拓扑加载失败:", err);
-      alert("无法加载拓扑图，请检查服务器！");
-    });
-}
-
-//删除当前拓扑
-function stopTopology() {
-  fetch(serverUrl + "/stop", { method: "POST" })
-    .then(res => res.json())
-    .then(data => {
-      alert(data.message);
-      // 清空画布
-      cy.elements().remove();
-    })
-    .catch(err => {
-      alert("❌ 停止拓扑失败：" + err);
-    });
-}
-
-// 发送用户意图
-function sendIntent() {
-  const intent = document.getElementById("intent-input").value.trim();
-  if (!intent) {
-    alert("请输入意图！");
-    return;
-  }
-
-  fetch(serverUrl + "/intent", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ intent })
-  })
-    .then(res => res.json())
-    .then(data => {
-      let resultText = "";
-      if (data.error) {
-          resultText = "❌ 错误：" + data.error;
-      } else {
-          resultText = `✅ 指令类型: ${data.instruction.action}\n`;
-          
-          if (typeof data.output === 'object') {
-              // 处理ping_test的详细结果
-              resultText += `测试结果: ${data.output.interpretation}\n`;
-              resultText += `原始输出:\n${data.output.raw_output}`;
-          } else {
-              // 其他指令的普通输出
-              resultText += `执行结果: ${data.output}`;
-          }
-          
-          // 自动刷新拓扑图（对于影响拓扑的操作）
-          if (['create_topology', 'install_flowtable'].includes(data.instruction.action)) {
-              loadTopology();
-          }
-      }
-      document.getElementById("response").textContent = resultText;
-  });
-}
-
-// 页面加载时自动加载当前拓扑图
-window.onload = loadTopology;
-</script>
-
+    loadTopology();
+  </script>
 </body>
 </html>

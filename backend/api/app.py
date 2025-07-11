@@ -46,6 +46,7 @@ def handle_intent():
 def topology():
     topo_json = get_current_topology()
     print("[DEBUG] 当前 global_net:", mm.global_net)
+    print("[DEBUG] 当前 topology 返回内容:", topo_json)
     return jsonify(topo_json)
 
 # 删除拓扑

@@ -33,15 +33,15 @@ def run_mininet_code(code: str) -> str:
 def get_current_topology():
     global global_net
     if not global_net:
-        return {"nodes": [], "edges": []}
+        return {"nodes": [], "links": []}
 
     nodes = []
-    edges = []
+    links = []
 
     for host in global_net.hosts:
-        nodes.append({"data": {"id": host.name, "type": "host"}})
+        nodes.append({"id": host.name, "type": "host"})
     for switch in global_net.switches:
-        nodes.append({"data": {"id": switch.name, "type": "switch"}})
+        nodes.append({"id": switch.name, "type": "switch"})
 
     for link in global_net.links:
         try:
@@ -54,12 +54,13 @@ def get_current_topology():
 
             src = intf1.node.name
             dst = intf2.node.name
-            edges.append({"data": {"source": src, "target": dst}})
+            links.append({"source": src, "target": dst})
         except Exception as e:
             print(f"处理链路出错: {e}")
             continue
 
-    return {"nodes": nodes, "edges": edges}
+    return {"nodes": nodes, "links": links}
+
 
 def rebuild_topology(intent_json: dict) -> str:
     global global_net
