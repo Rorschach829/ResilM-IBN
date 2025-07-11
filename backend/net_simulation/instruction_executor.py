@@ -3,7 +3,15 @@ import backend.net_simulation.mininet_manager as mm  # ✅ 用模块别名导入
 from backend.net_simulation.ryu_controller import send_flow_mod
 import requests
 from backend.utils.ryu_utils import get_all_switch_ids
+from backend.utils.utils import convert_switch_name_to_dpid
 
+def convert_switch_name_to_dpid(name: str) -> int:
+    """
+    将交换机名（如 's1'）转换为对应的 dpid（数字）
+    """
+    if name.startswith("s"):
+        return int(name[1:])
+    raise ValueError(f"无法识别的交换机名: {name}")
 
 def execute_instruction(instruction: dict) -> str:
     action = instruction.get("action")
@@ -81,6 +89,28 @@ def execute_instruction(instruction: dict) -> str:
                     return f"❌ 删除流表失败: {e}"
 
         return "✅ 流表删除成功"
+
+    elif action == "get_flowtable":
+        switches = instruction.get("switches", [])
+        results = []
+
+        for sw in switches:
+            dpid = convert_switch_name_to_dpid(sw)
+            url = f"http://localhost:8081/stats/flow/{dpid}"
+            print("[DEBUG] 请求 URL:", url)
+            try:
+                resp = requests.get(url)
+                if resp.status_code == 200:
+                    flows = resp.json().get(str(dpid), [])
+                    formatted = json.dumps(flows, indent=2, ensure_ascii=False)
+                    results.append(f"✅ 交换机 {sw} 当前流表:\n{formatted}")
+                else:
+                    results.append(f"❌ 无法获取交换机 {sw} 的流表")
+            except Exception as e:
+                results.append(f"❌ 请求失败: {e}")
+
+        return "\n\n".join(results)
+
 
     elif action == "shutdown_topology":
         if mm.global_net:

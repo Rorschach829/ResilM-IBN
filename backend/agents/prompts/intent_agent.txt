@@ -44,12 +44,15 @@
        "target": 目标主机 IP 地址，如 "10.0.0.2"
      }}
 
+5. get_flowtable
+   - switches: 要查看的交换机列表,如["s1"]
 注意事项：
 - 所有字段必须严格符合格式，LLM 只输出符合 JSON 标准的对象，不包含说明、注释、空行或 Markdown 标记。
 - 不要出现 null、None 或空 key。
 - 输出的 JSON 结构必须和上述 action 类型相匹配，否则视为解析失败。
 
 示例：
+
 当用户意图为：删除阻止 h1 ping h2 的流表规则
 返回 JSON应该是：
 {{
@@ -62,6 +65,14 @@
     "nw_proto": 1
   }}
 }}
+
+当用户意图为: 查看交换机s1的流表时
+返回 JSON应该是：
+{{
+  "action": "get_flowtable",
+  "switches": ["s1"]
+}}
+
 
 用户意图：
 {intent_text}
