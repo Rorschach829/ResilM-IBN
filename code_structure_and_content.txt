@@ -1,0 +1,1314 @@
+### 目录结构（仅含 .py / .html / .txt 文件）###
+
+Meta-IBN/
+    test_ds.py
+    test_mininet.py
+    backend/
+        __init__.py
+        main.py
+        api/
+            __init__.py
+            app.py
+        net_simulation/
+            instruction_executor.py
+            mininet_manager.py
+            ryu_controller.py
+        controller/
+            ryu.py
+        agents/
+            intent_agent.py
+            prompts/
+                intent_agent.txt
+        utils/
+            __init__.py
+            auto_generate_path_intents.py
+            ryu_utils.py
+            token_utils.py
+            utils.py
+    ryu_app/
+        PathIntentController.py
+        __init__.py
+        templates/
+            index.html
+
+
+### 文件内容 ###
+
+# 文件路径: ./test_ds.py
+# Please install OpenAI SDK first: `pip3 install openai`
+
+from openai import OpenAI
+
+client = OpenAI(api_key="sk-692005762cca46ac9faf28703ae6efe0", base_url="https://api.deepseek.com")
+
+response = client.chat.completions.create(
+    model="deepseek-chat",
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant"},
+        {"role": "user", "content": "Hello"},
+    ],
+    stream=False
+)
+
+print(response.choices[0].message.content)
+
+# 文件路径: ./test_mininet.py
+from mininet.net import Mininet
+from mininet.node import RemoteController
+from mininet.cli import CLI
+from mininet.log import setLogLevel
+
+def test_network():
+    setLogLevel('info')
+
+    net = Mininet(controller=RemoteController)
+
+    # 添加远程控制器，IP和端口根据你的环境调整
+    c0 = net.addController('c0', controller=RemoteController, ip='127.0.0.1', port=6633)
+
+    # 添加主机和交换机
+    h1 = net.addHost('h1')
+    h2 = net.addHost('h2')
+    s1 = net.addSwitch('s1')
+
+    # 链接主机和交换机
+    net.addLink(h1, s1)
+    net.addLink(h2, s1)
+
+    net.start()
+
+    print("\n*** 测试所有主机之间的连通性 ***")
+    net.pingAll()
+
+    print("\n*** 进入Mininet命令行界面，可以执行命令 ***")
+    CLI(net)
+
+    net.stop()
+
+if __name__ == '__main__':
+    test_network()
+
+
+# 文件路径: ./backend/__init__.py
+
+
+# 文件路径: ./backend/main.py
+
+
+# 文件路径: ./backend/api/__init__.py
+
+
+# 文件路径: ./backend/api/app.py
+from flask import Flask, request, jsonify, render_template
+from flask_cors import CORS
+from backend.agents.intent_agent import IntentAgent
+from backend.net_simulation.mininet_manager import run_mininet_code, get_current_topology, stop_topology,rebuild_topology
+from backend.net_simulation.instruction_executor import execute_instruction
+import backend.net_simulation.mininet_manager as mm
+from backend.utils.token_utils import get_total_tokens
+
+app = Flask(__name__, 
+            template_folder="/data/gjw/Meta-IBN/frontend/templates", 
+            static_folder="/data/gjw/Meta-IBN/frontend/static")
+CORS(app, resources={r"/*": {"origins": "*"}})
+
+intent_agent = IntentAgent()
+
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+@app.route("/intent", methods=["POST"])
+def handle_intent():
+    data = request.json
+    intent_text = data.get("intent", "")
+
+    # 意图为空则直接返回
+    if not intent_text:
+        return jsonify({"error": "意图内容不能为空"}), 400
+
+    try:
+        instruction = intent_agent.intent_to_instruction(intent_text)
+        print("解析后的指令:", instruction)
+    except Exception as e:
+        return jsonify({"error": f"意图解析失败: {str(e)}"}), 500
+
+    try:
+        output = execute_instruction(instruction)
+    except Exception as e:
+        return jsonify({"error": f"指令执行失败: {str(e)}"}), 500
+
+    return jsonify({
+        "message": "✅ 指令执行成功",
+        "instruction": instruction,
+        "output": output,
+        "success": True if not isinstance(output, str) else "error" not in output.lower()
+    })
+
+# 获取当前拓扑
+@app.route("/topology", methods=["GET"])
+def topology():
+    topo_json = get_current_topology()
+    print("[DEBUG] 当前 global_net:", mm.global_net)
+    print("[DEBUG] 当前 topology 返回内容:", topo_json)
+    return jsonify(topo_json)
+
+# 删除拓扑
+@app.route("/stop", methods=["POST"])
+def stop():
+    message = stop_topology()
+    return jsonify({"message": message})
+
+# 获取当前token消耗
+@app.route("/token_stats", methods=["GET"])
+def token_stats():
+    return jsonify({"total_tokens": get_total_tokens()})
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
+
+
+
+# 文件路径: ./backend/net_simulation/instruction_executor.py
+import json
+import backend.net_simulation.mininet_manager as mm  # ✅ 用模块别名导入
+from backend.net_simulation.ryu_controller import send_flow_mod
+import requests
+from backend.utils.ryu_utils import get_all_switch_ids
+from backend.utils.utils import convert_switch_name_to_dpid
+import time
+import threading
+import multiprocessing
+import os
+
+def _ping_task(args):
+    src_name, dst_ip = args
+    from backend.net_simulation.mininet_manager import global_net
+    src = next(h for h in global_net.hosts if h.name == src_name)
+    src.cmd(f"ping -c1 -W1 {dst_ip} > /dev/null 2>&1")
+    return f"{src_name} -> {dst_ip} ✅"
+
+def preheat_mac_learning(net):
+    print("🔥 正在进行并发 Ping 预热...")
+    hosts = net.hosts
+    ping_jobs = []
+
+    for src in hosts:
+        for dst in hosts:
+            if src != dst:
+                ping_jobs.append((src.name, dst.IP()))
+
+    # 使用进程池并发执行 ping 操作（最多 8 并发）
+    with multiprocessing.Pool(processes=min(8, os.cpu_count())) as pool:
+        results = pool.map(_ping_task, ping_jobs)
+
+    for r in results:
+        print(r)
+    print("✅ MAC 学习完成")
+
+
+def convert_switch_name_to_dpid(name: str) -> int:
+    """
+    将交换机名（如 's1'）转换为对应的 dpid（数字）
+    """
+    if name.startswith("s"):
+        return int(name[1:])
+    raise ValueError(f"无法识别的交换机名: {name}")
+
+def execute_instruction(instruction: dict) -> str:
+    action = instruction.get("action")
+    if action == "create_topology":
+        # ✅ 提取合法主机名（来自 JSON 指令）
+        valid_hosts = instruction.get("hosts", [])
+        print("📤 向控制器注册合法主机:", valid_hosts)
+
+        # ✅ 注册合法主机到 Ryu 控制器
+        try:
+            resp = requests.post("http://localhost:8081/intent/valid_hosts", json={"hosts": valid_hosts})
+            if resp.status_code != 200:
+                print("❌ 合法主机注册失败，响应码:", resp.status_code)
+                return "❌ 合法主机注册失败"
+        except Exception as e:
+            print(f"❌ 注册合法主机异常: {e}")
+            return f"❌ 注册合法主机异常: {e}"
+
+        # ✅ 注册完成后，再调用 Mininet 创建拓扑
+        result = mm.rebuild_topology(instruction)
+
+        # ✅ 预热 MAC 学习（通过 ping all）
+        from backend.net_simulation.mininet_manager import global_net
+        preheat_mac_learning(global_net)
+
+        # ✅ 构造一个可序列化的拓扑摘要
+        topo_summary = {
+            "message": "拓扑创建成功",
+            "num_hosts": len(global_net.hosts),
+            "num_switches": len(global_net.switches),
+            "host_list": [h.name for h in global_net.hosts],
+            "switch_list": [s.name for s in global_net.switches]
+        }
+        return topo_summary
+
+    elif action == "install_flowtable":
+        flow_rule = {
+            "dpid": 1,  # 默认交换机ID，可扩展支持多个
+            "match": instruction.get("extra", {}).get("match", {}),
+            "actions": [],  # DENY 默认丢弃
+            "priority": instruction.get("extra", {}).get("priority", 100)
+        }
+
+        if instruction.get("extra", {}).get("actions") == "DENY":
+            if send_flow_mod(flow_rule):
+                return f"✅ 流表下发成功 (阻断 {flow_rule['match']})"
+            else:
+                return "❌ 流表下发失败"
+
+    elif action == "ping_test":
+        print(f"[DEBUG] global_net状态: {mm.global_net}")
+        if not mm.global_net:
+            return "❌ 当前没有拓扑 (请先创建拓扑或检查global_net引用)"
+
+        # ✅ 双保险：先取 extra 里的，没有再取外层的
+        src_name = instruction.get("extra", {}).get("source") or instruction.get("source")
+        target_ip = instruction.get("extra", {}).get("target") or instruction.get("target")
+        target_host = instruction.get("extra", {}).get("target_host") or instruction.get("target")
+
+        if not src_name or not target_ip:
+            return "❌ 指令缺少 source 或 target"
+
+        src_host = mm.global_net.get(src_name)
+
+        if not src_host:
+            return f"❌ 主机 {src_name} 不存在"
+
+        # ✅ 加上这句预热目标主机，让其先发包触发 MAC 学习
+        # preheat_mac_learning(mm.global_net)
+        # 此处使用 IP 执行 ping，而不是主机名
+        result = src_host.cmd(f"ping -c 3 {target_ip}")
+        success = "3 received" in result
+
+        return f"{src_name} {'可以✅' if success else '无法❌'} ping 通 {target_host or target_ip}"
+
+    elif action == "delete_flowtable":
+        switches = instruction.get("switches", [])
+
+        # 支持 match 字段既可能在 extra 中，也可能在顶层
+        extra = instruction.get("extra", {})
+        match = extra.get("match") or instruction.get("match", {})
+
+        if not switches:
+            return "❌ 错误：未指定交换机"
+
+        for sw in switches:
+            if sw == "all":
+                # 查询所有交换机 ID
+                sw_list = get_all_switch_ids()
+            else:
+                sw_list = [int(sw.replace("s", ""))]
+
+            for dpid in sw_list:
+                payload = {
+                    "dpid": dpid,
+                    "match": match
+                }
+                try:
+                    resp = requests.post("http://localhost:8081/stats/flowentry/delete", json=payload)
+                    if resp.status_code != 200:
+                        return f"❌ 删除流表失败，交换机 {dpid} 返回码 {resp.status_code}"
+                except Exception as e:
+                    return f"❌ 删除流表失败: {e}"
+
+        return "✅ 流表删除成功"
+
+    elif action == "get_flowtable":
+        switches = instruction.get("switches", [])
+        results = []
+
+        for sw in switches:
+            dpid = convert_switch_name_to_dpid(sw)
+            url = f"http://localhost:8081/stats/flow/{dpid}"
+            print("[DEBUG] 请求 URL:", url)
+            try:
+                resp = requests.get(url)
+                if resp.status_code == 200:
+                    flows = resp.json().get(str(dpid), [])
+                    formatted = json.dumps(flows, indent=2, ensure_ascii=False)
+                    results.append(f"✅ 交换机 {sw} 当前流表:\n{formatted}")
+                else:
+                    results.append(f"❌ 无法获取交换机 {sw} 的流表")
+            except Exception as e:
+                results.append(f"❌ 请求失败: {e}")
+
+        return "\n\n".join(results)
+
+
+    elif action == "shutdown_topology":
+        if mm.global_net:
+            mm.global_net.stop()
+            mm.global_net.delete()
+            mm.global_net = None
+        return "✅ 拓扑已关闭"
+
+    elif action == "delete_host":
+        if not mm.global_net:
+            return "❌ 当前没有拓扑"
+        target = instruction.get("target")
+        node = mm.global_net.get(target)
+        if not node:
+            return f"❌ 节点 {target} 不存在"
+        mm.global_net.delNode(node)
+        return f"✅ 已删除节点 {target}"
+
+    else:
+        return f"❌ 未识别的指令类型: {action}"
+
+
+
+
+
+# 文件路径: ./backend/net_simulation/mininet_manager.py
+import tempfile
+import traceback
+from mininet.clean import cleanup
+from backend.agents.intent_agent import IntentAgent
+
+global_net = None  # 全局保存net实例
+
+def run_mininet_code(code: str) -> str:
+    global global_net
+
+    try:
+        exec_globals = {}
+        # 执行 LLM 生成的 Mininet 代码（需包含 net = Mininet(...)）
+        exec(code, exec_globals)
+
+        if "net" not in exec_globals:
+            return "错误：代码中未定义 net 对象"
+
+        # 如果已有运行中的拓扑，先停止
+        if global_net:
+            try:
+                global_net.stop()
+            except Exception:
+                pass
+
+        global_net = exec_globals["net"]
+        return "拓扑启动成功，网络已激活"
+
+    except Exception as e:
+        tb = traceback.format_exc()
+        return f"执行错误: {str(e)}\n{tb}"
+
+def get_current_topology():
+    global global_net
+    if not global_net:
+        return {"nodes": [], "links": []}
+
+    nodes = []
+    links = []
+
+    for host in global_net.hosts:
+        nodes.append({"id": host.name, "type": "host"})
+    for switch in global_net.switches:
+        nodes.append({"id": switch.name, "type": "switch"})
+
+    for link in global_net.links:
+        try:
+            intf1 = link.intf1
+            intf2 = link.intf2
+
+            if intf1 is None or intf2 is None or intf1.node is None or intf2.node is None:
+                print(f"Warning: 无效链路 {link}，跳过")
+                continue
+
+            src = intf1.node.name
+            dst = intf2.node.name
+            links.append({"source": src, "target": dst})
+        except Exception as e:
+            print(f"处理链路出错: {e}")
+            continue
+
+    return {"nodes": nodes, "links": links}
+
+
+def rebuild_topology(intent_json: dict) -> str:
+    global global_net
+
+    # cleanup()
+
+    # 若已有拓扑，先销毁
+    if global_net:
+        try:
+            global_net.stop()
+            global_net = None
+        except Exception as e:
+            print(f"销毁旧拓扑失败: {e}")
+
+    code = build_mininet_code_from_json(intent_json)
+
+    exec_globals = {}
+    try:
+        exec(code, exec_globals)
+        global_net = exec_globals.get("net")
+        if not global_net:
+            raise Exception("生成的代码中未创建 net 实例")
+        return global_net
+    except Exception as e:
+        global_net = None
+        return f"❌ 拓扑创建失败: {str(e)}"
+
+def stop_topology() -> str:
+    global global_net
+    if not global_net:
+        return "当前没有运行中的拓扑"
+
+    try:
+        global_net.stop()
+        global_net = None
+        return "拓扑已成功停止"
+    except Exception as e:
+        return f"停止拓扑失败: {str(e)}"
+
+def build_mininet_code_from_json(data: dict) -> str:
+    hosts = data.get("hosts", [])
+    switches = data.get("switches", [])
+    links = data.get("links", [])
+    controller = data.get("controller", {"type": "RemoteController", "ip": "127.0.0.1", "port": 6633})
+
+    lines = [
+        "from mininet.net import Mininet",
+        "from mininet.cli import CLI",
+        "from mininet.log import setLogLevel",
+        "from mininet.node import RemoteController",
+        "",
+        "setLogLevel('info')",
+        "",
+        f"net = Mininet(controller=None)",
+        f"c0 = net.addController('c0', controller=RemoteController, ip='{controller['ip']}', port={controller['port']})",
+    ]
+
+    # for h in hosts:
+    #     lines.append(f"{h} = net.addHost('{h}')")
+
+    # 添加主机并分配ip地址
+    for i, h in enumerate(hosts):
+        ip = f"10.0.0.{i + 1}"
+        lines.append(f"{h} = net.addHost('{h}', ip='{ip}')")
+
+    for s in switches:
+        lines.append(f"{s} = net.addSwitch('{s}')")
+    for link in links:
+        lines.append(f"net.addLink({link['src']}, {link['dst']})")
+
+    lines += [
+        "net.start()",
+        # ✅ 禁用所有主机 IPv6
+        "for h in net.hosts:",
+        "    h.cmd('sysctl -w net.ipv6.conf.all.disable_ipv6=1')",
+        "# CLI(net)  # 已禁用，为了非阻塞执行",
+        ""
+    ]
+
+    return "\n".join(lines)
+
+
+# 文件路径: ./backend/net_simulation/ryu_controller.py
+import requests
+import json
+RYU_REST_API = "http://localhost:8081"
+
+def send_flow_mod(flow_rule: dict) -> bool:
+    try:
+        url = f"{RYU_REST_API}/stats/flowentry/add"
+        payload = {
+            "dpid": flow_rule["dpid"],
+            "priority": flow_rule["priority"],
+            "match": flow_rule["match"],
+            "actions": flow_rule["actions"],
+            "command": "add"
+        }
+
+        response = requests.post(url, json=payload)
+
+        print("[DEBUG] 请求 URL:", url)
+        print("[DEBUG] 请求 Payload:", json.dumps(payload, indent=2))
+        print("[DEBUG] 响应状态码:", response.status_code)
+        print("[DEBUG] 响应内容:", response.text)
+
+        return response.status_code == 200
+
+    except Exception as e:
+        print(f"Ryu API调用失败: {e}")
+        return False
+
+
+
+# 文件路径: ./backend/controller/ryu.py
+
+
+# 文件路径: ./backend/agents/intent_agent.py
+from openai import OpenAI
+import json
+import os
+from backend.utils.token_utils import record_tokens_from_response
+client = OpenAI(api_key="sk-692005762cca46ac9faf28703ae6efe0", base_url="https://api.deepseek.com")
+
+class IntentAgent:
+    def __init__(self, prompt_path="/data/gjw/Meta-IBN/backend/agents/prompts/intent_agent.txt"):
+        self.prompt_path = prompt_path
+
+    def load_prompt_template(self) -> str:
+        """
+        从本地文本文件加载提示词模板
+        """
+        if not os.path.exists(self.prompt_path):
+            raise FileNotFoundError(f"提示词文件不存在: {self.prompt_path}")
+        with open(self.prompt_path, "r", encoding="utf-8") as f:
+            return f.read()
+
+    def build_prompt(self, intent_text: str) -> str:
+        """
+        替换模板中的 {intent_text} 变量
+        """
+        template = self.load_prompt_template()
+        return template.format(intent_text=intent_text)
+    def intent_to_instruction(self, intent_text: str) -> dict:
+      # 现将response赋值为None，防止调用出错
+        response = None
+        prompt = self.build_prompt(intent_text)
+        messages = [
+            {"role": "system", "content": "你是网络拓扑与控制指令生成助手，只输出JSON指令。"},
+            {"role": "user", "content": prompt}
+        ]
+
+        try:
+          response = client.chat.completions.create(
+              model="deepseek-chat",
+              messages=messages,
+             stream=False
+          )
+          content = response.choices[0].message.content.strip()
+        except Exception as e:
+          print("LLM 错误:", e)
+
+        # print("LLM 返回原始内容:\n", content)
+
+        # 如果LLM有响应则获取当前token消耗量
+        if response:
+          record_tokens_from_response(response)
+        else:
+          raise Exception("LLM 响应为空，无法继续解析")
+        # 清除 markdown 格式包裹
+        if content.startswith("```"):
+            content = content.strip("`")
+            lines = content.splitlines()
+            if lines and lines[0].startswith("json"):
+                content = "\n".join(lines[1:])  # 删除第一行 ```json
+
+        print("LLM 返回清洗Markdown后内容:\n", content)
+
+        if not content:
+            raise Exception("LLM 返回为空，请检查提示词")
+
+        # 尝试解析JSON，如果失败，抛异常提醒调试
+        try:
+            json_data = json.loads(content)
+        except json.JSONDecodeError as e:
+            raise Exception(f"LLM 返回内容不是有效JSON: {e}\n内容:\n{content}")
+
+        return json_data
+
+
+# 文件路径: ./backend/agents/prompts/intent_agent.txt
+你是一个 SDN 网络专家，请根据用户输入的意图，提取并返回结构化指令（JSON格式），以便后端执行。
+
+输出要求：
+- 只返回纯 JSON，不包含任何 Markdown（例如 ```json）。
+- 所有字段必须符合格式规范，不能多也不能少。
+- 所有数字必须是十进制格式，禁止使用十六进制（例如 0x0800）。
+
+支持的指令类型（action）包括：
+1. create_topology
+   - hosts: 主机列表，如 ["h1", "h2"]
+   - switches: 交换机列表，如 ["s1"]
+   - links: 链接列表，每条为 {{"src": "h1", "dst": "s1"}}
+   - controller: {{
+       "type": "RemoteController",
+       "ip": "127.0.0.1",
+       "port": 6633
+     }}
+
+2. install_flowtable
+   - switches: 目标交换机列表，如 ["s1"]
+   - extra: {{
+       "match": {{
+         "dl_type": 2048,
+         "nw_src": "10.0.0.1",
+         "nw_dst": "10.0.0.2",
+         "nw_proto": 1
+       }},
+       "actions": "DENY" 或 "ALLOW",
+       "priority": 整数
+     }}
+
+3. delete_flowtable
+   - switches: 要操作的交换机列表，如 ["s1"]
+   - match: 匹配条件（必须和 install_flowtable 完全一致才能删除成功），必须包含：
+       - dl_type: 2048 （IP 层协议）
+       - nw_src: 源 IP 地址
+       - nw_dst: 目的 IP 地址
+       - nw_proto: 协议号，1 表示 ICMP（如需删除阻断 ping 的规则，必须设置为 1）
+
+4. ping_test
+   - hosts: 所涉及主机名列表，如 ["h1", "h2"]
+   - extra: {{
+       "source": 源主机名，如 "h1",
+       "target": 目标主机 IP 地址，如 "10.0.0.2"
+     }}
+
+5. get_flowtable
+   - switches: 要查看的交换机列表,如["s1"]
+注意事项：
+- 所有字段必须严格符合格式，LLM 只输出符合 JSON 标准的对象，不包含说明、注释、空行或 Markdown 标记。
+- 不要出现 null、None 或空 key。
+- 输出的 JSON 结构必须和上述 action 类型相匹配，否则视为解析失败。
+
+示例：
+
+当用户意图为：删除阻止 h1 ping h2 的流表规则
+返回 JSON应该是：
+{{
+  "action": "delete_flowtable",
+  "switches": ["s1"],
+  "match": {{
+    "dl_type": 2048,
+    "nw_src": "10.0.0.1",
+    "nw_dst": "10.0.0.2",
+    "nw_proto": 1
+  }}
+}}
+
+当用户意图为: 查看交换机s1的流表时
+返回 JSON应该是：
+{{
+  "action": "get_flowtable",
+  "switches": ["s1"]
+}}
+
+
+用户意图：
+{intent_text}
+
+
+# 文件路径: ./backend/utils/__init__.py
+
+
+# 文件路径: ./backend/utils/auto_generate_path_intents.py
+import requests
+
+# networkx用来解析mininet拓扑结构，计算主机之间的最短路径
+import networkx as nx
+
+def build_and_send_all_path_intents(net, controller_url="http://localhost:8081"):
+    """
+    根据 Mininet 拓扑自动生成所有主机间的路径意图流表，并下发至控制器。
+    要求控制器支持 POST /intent/flow 接口。
+    """
+    print("🚀 正在自动生成并下发所有主机间流表意图...")
+
+    hosts = net.hosts
+    switches = net.switches
+    links = net.links
+
+    # 提取主机名称与 IP
+    host_info = {h.name: h.IP() for h in hosts}
+
+    # 构建 NetworkX 拓扑图
+    topo = nx.Graph()
+    for link in links:
+        node1, node2 = link.intf1.node.name, link.intf2.node.name
+        topo.add_edge(node1, node2)
+
+    count = 0
+    for src_name, src_ip in host_info.items():
+        for dst_name, dst_ip in host_info.items():
+            if src_name == dst_name:
+                continue
+
+            # 找出路径，例如 h1 -> s1 -> s2 -> s3 -> h9
+            try:
+                path = nx.shortest_path(topo, src_name, dst_name)
+            except nx.NetworkXNoPath:
+                print(f"❌ 无法找到 {src_name} 到 {dst_name} 的路径")
+                continue
+
+            # 提取交换机路径，如 [s1, s2, s3]
+            switch_path = [node for node in path if node.startswith("s")]
+
+            if not switch_path:
+                continue  # 两主机直连跳过
+
+            # 构造意图
+            intent = {
+                "source": src_name,
+                "target": dst_name,
+                "path": switch_path,
+                "extra": {
+                    "match": {
+                        "dl_type": 2048,
+                        "nw_src": src_ip,
+                        "nw_dst": dst_ip,
+                        "nw_proto": 1
+                    },
+                    "actions": "ALLOW",
+                    "priority": 100
+                }
+            }
+
+            # 下发意图
+            try:
+                response = requests.post(f"{controller_url}/intent/flow", json=intent)
+                if response.status_code == 200:
+                    print(f"✅ 成功安装流表: {src_name} -> {dst_name} via {switch_path}")
+                    count += 1
+                else:
+                    print(f"❌ 安装失败: {src_name} -> {dst_name}, 状态码: {response.status_code}")
+            except Exception as e:
+                print(f"❌ 请求失败: {e}")
+
+    print(f"🎉 共下发 {count} 条路径意图流表。主机间通信已打通！")
+
+
+# 文件路径: ./backend/utils/ryu_utils.py
+import requests
+
+def get_all_switch_ids():
+    try:
+        resp = requests.get("http://localhost:8081/stats/switches")
+        if resp.status_code == 200:
+            return resp.json()
+    except Exception as e:
+        print("[ERROR] 获取交换机列表失败:", e)
+    return []
+
+
+# 文件路径: ./backend/utils/token_utils.py
+# backend/utils/token_utils.py
+
+total_tokens_used = 0  # 全局变量
+
+def record_tokens_from_response(response):
+    global total_tokens_used
+    try:
+        if hasattr(response, "usage"):
+            prompt = response.usage.prompt_tokens
+            completion = response.usage.completion_tokens
+            total = response.usage.total_tokens
+            total_tokens_used += total
+
+            print(f"[Token Monitor] prompt: {prompt}, completion: {completion}, total: {total}")
+        else:
+            print("[Token Monitor] ⚠️ 无 usage 字段，可能是异常响应")
+    except Exception as e:
+        print(f"[Token Monitor] ❌ 记录 token 时出错: {e}")
+
+def get_total_tokens():
+    global total_tokens_used
+    return total_tokens_used
+
+
+
+# 文件路径: ./backend/utils/utils.py
+# utils/utils.py
+
+def convert_switch_name_to_dpid(name: str) -> int:
+    """
+    将交换机名（如 's1'）转换为 Ryu 需要的 dpid 整数（如 1）
+    """
+    try:
+        if name.lower().startswith("s"):
+            return int(name[1:])
+        raise ValueError
+    except Exception:
+        raise ValueError(f"交换机名称不合法: {name}")
+
+
+# 文件路径: ./ryu_app/PathIntentController.py
+# PathIntentController.py
+
+from ryu.base import app_manager
+from ryu.controller import ofp_event
+from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER, set_ev_cls
+from ryu.ofproto import ofproto_v1_3
+from ryu.lib.packet import packet, ethernet
+from ryu.topology import event
+from ryu.app.wsgi import ControllerBase, WSGIApplication, route
+import requests
+from webob import Response
+import json
+
+INTENT_INSTANCE_NAME = 'intent_api_app'
+INTENT_REST_PATH = '/intent/flow'
+
+
+class PathIntentController(app_manager.RyuApp):
+    OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
+    _CONTEXTS = {'wsgi': WSGIApplication}
+
+    def __init__(self, *args, **kwargs):
+        super(PathIntentController, self).__init__(*args, **kwargs)
+        wsgi = kwargs['wsgi']
+        self.topology_api_app = self
+
+        self.switches = {}
+        self.ports = {}
+        self.host_mac_table = {}
+        self.mac_to_host_table = {}
+        self.valid_hosts = set()
+        self.seen_invalid_macs = set()
+
+        wsgi.register(IntentRestAPI, {INTENT_INSTANCE_NAME: self})
+
+    @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
+    def switch_features_handler(self, ev):
+        datapath = ev.msg.datapath
+        self.switches[datapath.id] = datapath
+        parser = datapath.ofproto_parser
+        ofproto = datapath.ofproto
+
+        # ✅ 安装默认 miss-flow 表项：转发给控制器
+        match = parser.OFPMatch()
+        actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
+                                          ofproto.OFPCML_NO_BUFFER)]
+        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,
+                                             actions)]
+        mod = parser.OFPFlowMod(datapath=datapath, priority=0,
+                                match=match, instructions=inst)
+        datapath.send_msg(mod)
+
+    @set_ev_cls(event.EventLinkAdd)
+    def link_add_handler(self, ev):
+        src_dpid = ev.link.src.dpid
+        dst_dpid = ev.link.dst.dpid
+        self.ports[(src_dpid, dst_dpid)] = ev.link.src.port_no
+
+    @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
+    def _packet_in_handler(self, ev):
+        msg = ev.msg
+        datapath = msg.datapath
+        parser = datapath.ofproto_parser
+        in_port = msg.match['in_port']
+        pkt = packet.Packet(msg.data)
+        eth = pkt.get_protocol(ethernet.ethernet)
+
+        src = str(eth.src).lower()
+        dst = str(eth.dst).lower()
+
+        # ✅ 忽略广播和 LLDP 包
+        if dst == "ff:ff:ff:ff:ff:ff" or dst.startswith("01:80:c2"):
+            return
+
+        # ✅ 已学习则跳过
+        if src in self.mac_to_host_table:
+            return
+
+        # ✅ 学习主机数量限制
+        if len(self.host_mac_table) >= len(self.valid_hosts):
+            if src not in self.seen_invalid_macs:
+                self.logger.warning(f"⚠️ 未知主机 MAC: {src}，已达到主机上限")
+                self.seen_invalid_macs.add(src)
+            return
+
+        # ✅ 分配 h1-hN 名称
+        for hname in sorted(self.valid_hosts):
+            if hname not in self.host_mac_table:
+                self.host_mac_table[hname] = src
+                self.mac_to_host_table[src] = hname
+                self.logger.info(f"📌 学习到主机: {hname} -> {src}")
+                break
+
+    def install_path_flow(self, src_mac, dst_mac, path, match_fields, actions_str, priority):
+        for i in range(len(path) - 1):
+            curr = path[i]
+            nxt = path[i + 1]
+
+            if curr.startswith('h') or nxt.startswith('h'):
+                self.logger.info(f"⏭️ 跳过非交换机段: {curr} -> {nxt}")
+                continue
+
+            try:
+                curr_dpid = int(curr[1:])
+                next_dpid = int(nxt[1:])
+            except ValueError:
+                self.logger.warning(f"❌ 非法节点名称: {curr}, {nxt}")
+                continue
+
+            datapath = self.switches.get(curr_dpid)
+            if not datapath:
+                self.logger.warning(f"❌ Datapath {curr_dpid} not found")
+                continue
+
+            out_port = self.ports.get((curr_dpid, next_dpid))
+            if out_port is None:
+                self.logger.warning(f"❌ No link from {curr_dpid} to {next_dpid}")
+                continue
+
+            parser = datapath.ofproto_parser
+            ofproto = datapath.ofproto
+
+            match_dict = {"eth_src": src_mac, "eth_dst": dst_mac}
+            for k, v in match_fields.items():
+                match_dict["eth_type" if k == "dl_type" else k] = v
+
+            match = parser.OFPMatch(**match_dict)
+            actions = [] if actions_str.upper() == "DENY" else [parser.OFPActionOutput(out_port)]
+            inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
+            mod = parser.OFPFlowMod(datapath=datapath, priority=priority,
+                                    match=match, instructions=inst)
+            datapath.send_msg(mod)
+
+            self.logger.info(f"✅ 下发: {curr}({curr_dpid}) → {nxt}({next_dpid}) | port={out_port}")
+
+
+class IntentRestAPI(ControllerBase):
+    def __init__(self, req, link, data, **config):
+        super(IntentRestAPI, self).__init__(req, link, data, **config)
+        self.intent_app = data[INTENT_INSTANCE_NAME]
+
+    @route('intent', INTENT_REST_PATH, methods=['POST'])
+    def install_intent_flow(self, req, **kwargs):
+        try:
+            body = req.json if req.body else {}
+            print(f"\n[DEBUG] 收到路径意图请求:\n{json.dumps(body, indent=2)}\n")
+            src_host = body.get("source")
+            dst_host = body.get("target")
+            path = body.get("path")
+            extra = body.get("extra", {})
+            match_fields = extra.get("match", {})
+            actions_str = extra.get("actions", "ALLOW")
+            priority = extra.get("priority", 100)
+
+            if not (src_host and dst_host and path):
+                return Response(status=400, body="❌ 缺少必要字段")
+
+            src_mac = self.intent_app.host_mac_table.get(src_host)
+            dst_mac = self.intent_app.host_mac_table.get(dst_host)
+
+            if not src_mac or not dst_mac:
+                return Response(status=400, body=f"❌ 无法找到主机 MAC: {src_host}({src_mac}), {dst_host}({dst_mac})")
+
+            self.intent_app.install_path_flow(src_mac, dst_mac, path, match_fields, actions_str, priority)
+            return Response(status=200, body=f"✅ 成功安装流表: {src_host} -> {dst_host} via {path}")
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return Response(status=500, body=f"❌ 控制器异常: {str(e)}")
+
+    @route('intent', '/intent/valid_hosts', methods=['POST'])
+    def register_valid_hosts(self, req, **kwargs):
+        try:
+            body = req.json
+            hosts = body.get("hosts", [])
+            new_hosts_set = set(hosts)
+
+            print(f"📥 注册合法主机列表: {hosts}")
+
+            if new_hosts_set != self.intent_app.valid_hosts:
+                self.intent_app.valid_hosts = new_hosts_set
+                self.intent_app.host_mac_table.clear()
+                self.intent_app.mac_to_host_table.clear()
+                self.intent_app.seen_invalid_macs.clear()
+                self.intent_app.logger.info("✅ 已清空主机学习缓存，准备重新学习")
+            else:
+                self.intent_app.logger.info("📎 合法主机列表未变化，跳过清空学习缓存")
+
+            return Response(status=200, body=json.dumps({
+                "message": "✅ 合法主机注册成功",
+                "valid_hosts": hosts
+            }))
+        except Exception as e:
+            return Response(status=500, body=f"❌ 注册失败: {str(e)}")
+
+
+# 文件路径: ./ryu_app/__init__.py
+
+
+# 文件路径: ./frontend/templates/index.html
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>意图驱动网络配置系统</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+    }
+
+    #main-layout {
+      display: flex;
+      gap: 30px;
+      align-items: flex-start;
+    }
+
+    #left-panel {
+      flex: 1;
+      min-width: 600px;
+    }
+
+    #right-panel {
+      flex: 1;
+      max-width: 600px;
+    }
+
+    textarea {
+      width: 100%;
+      margin-bottom: 10px;
+    }
+
+    button {
+      margin-right: 10px;
+      margin-top: 5px;
+    }
+
+    pre {
+      background: #f4f4f4;
+      padding: 10px;
+      white-space: pre-wrap;
+      border: 1px solid #ddd;
+    }
+
+    svg {
+      border: 1px solid #ccc;
+      width: 100%;
+      height: 500px;
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <h1>意图驱动网络配置系统</h1>
+
+  <div id="main-layout">
+    <div id="left-panel">
+      <h3>网络拓扑图</h3>
+      <svg id="network"></svg>
+      <button onclick="loadTopology()">🔄 刷新拓扑</button>
+      <button onclick="stopTopology()">🛑 退出当前拓扑</button>
+    </div>
+
+    <div id="right-panel">
+      <h3>批量自定义意图测试</h3>
+      <div id="custom-intent-list">
+        <textarea rows="2" placeholder="在此输入一条意图，例如：创建包含 s1、h1、h2 的拓扑"></textarea>
+      </div>
+      <button onclick="addCustomIntent()">➕ 添加一条意图</button>
+      <button onclick="sendAllIntents()">🚀 发送所有意图</button>
+      <pre id="batch-response"></pre>
+    </div>
+
+    <div id="tokenDisplay" style="position: fixed; bottom: 10px; right: 20px; background-color: #f0f0f0; padding: 8px; border-radius: 5px; font-size: 14px;">
+      Tokens Used: <span id="tokenCount">0</span>
+    </div>
+    
+    
+  </div>
+
+  <script>
+    const serverUrl = "http://localhost:5000";
+
+    function addCustomIntent() {
+      const container = document.getElementById("custom-intent-list");
+      const textarea = document.createElement("textarea");
+      textarea.rows = 2;
+      textarea.placeholder = "新的意图...";
+      container.appendChild(textarea);
+    }
+
+    async function sendAllIntents() {
+      const results = [];
+      const inputs = document.querySelectorAll("#custom-intent-list textarea");
+
+      for (let i = 0; i < inputs.length; i++) {
+        const intent = inputs[i].value.trim();
+        if (!intent) continue;
+
+        inputs[i].style.backgroundColor = "#ffffcc";
+
+        try {
+          const res = await fetch(serverUrl + "/intent", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ intent })
+          });
+
+          const data = await res.json();
+          const now = new Date().toLocaleString('zh-CN', { hour12: false });
+
+          let text = `✅ 第 ${i + 1} 条意图：${intent}\n`;
+
+          if (data.error) {
+            text += `❌ 错误: ${data.error}\n时间: ${now}\n\n`;
+            inputs[i].style.backgroundColor = "#fdd";
+          } else {
+            const resultText = typeof data.output === 'object' && data.output?.interpretation
+              ? data.output.interpretation
+              : data.output;
+
+            text += `类型: ${data.instruction.action}\n结果: ${resultText}\n时间: ${now}\n\n`;
+            inputs[i].style.backgroundColor = "#d2f8d2";
+
+            if (["create_topology", "install_flowtable"].includes(data.instruction.action)) {
+              loadTopology();
+            }
+          }
+
+          results.push(text);
+        } catch (err) {
+          results.push(`❌ 第 ${i + 1} 条意图请求失败：${err}\n\n`);
+          inputs[i].style.backgroundColor = "#fdd";
+        }
+      }
+
+      document.getElementById("batch-response").textContent = results.join("\n");
+    }
+    
+    async function stopTopology() {
+      const confirmed = confirm("你确定要退出并删除当前拓扑吗？");
+      if (!confirmed) return;
+
+      try {
+        const res = await fetch(serverUrl + "/stop", {
+          method: "POST"
+        });
+
+        const data = await res.json();
+        alert("✅ 拓扑删除结果: " + data.message);
+
+        // 删除成功后刷新图
+        loadTopology();
+      } catch (err) {
+        alert("❌ 删除失败：" + err);
+      }
+    }
+
+    function drag(simulation) {
+      function dragstarted(event, d) {
+        if (!event.active) simulation.alphaTarget(0.3).restart();
+        d.fx = d.x;
+        d.fy = d.y;
+      }
+
+      function dragged(event, d) {
+        d.fx = event.x;
+        d.fy = event.y;
+      }
+
+      function dragended(event, d) {
+        if (!event.active) simulation.alphaTarget(0);
+        d.fx = null;
+        d.fy = null;
+      }
+
+      return d3.drag()
+        .on("start", dragstarted)
+        .on("drag", dragged)
+        .on("end", dragended);
+    } 
+
+    async function loadTopology() {
+      const res = await fetch(serverUrl + "/topology");
+      const data = await res.json();
+      const nodes = data.nodes || [];
+      const links = data.links || [];
+
+      const svg = d3.select("#network");
+      svg.selectAll("*").remove();
+
+      const width = svg.node().clientWidth;
+      const height = svg.node().clientHeight;
+
+      const g = svg.append("g");
+
+      // 缩放支持
+      svg.call(
+        d3.zoom()
+          .scaleExtent([0.5, 2])
+          .on("zoom", (event) => {
+            g.attr("transform", event.transform);
+          })
+      );
+
+      const simulation = d3.forceSimulation(nodes)
+        .force("link", d3.forceLink(links).id(d => d.id).distance(100))
+        .force("charge", d3.forceManyBody().strength(-300))
+        .force("center", d3.forceCenter(width / 2, height / 2));
+
+      const link = g.append("g")
+        .attr("stroke", "#999")
+        .attr("stroke-opacity", 0.6)
+        .selectAll("line")
+        .data(links)
+        .join("line")
+        .attr("stroke-width", 2);
+
+      // 创建节点容器 <g>
+      const nodeGroup = g.append("g")
+        .selectAll("g")
+        .data(nodes)
+        .join("g")
+        .call(drag(simulation));
+
+      // 根据类型插入图片
+      nodeGroup.append("image")
+        .attr("xlink:href", d => d.type === "switch" ? "/static/img/switch.png" : "/static/img/host.png")
+        .attr("width", 40)
+        .attr("height", 40)
+        .attr("x", -20)
+        .attr("y", -20);
+
+      // 添加标签
+      nodeGroup.append("text")
+        .text(d => d.id)
+        .attr("y", 30)
+        .attr("text-anchor", "middle")
+        .attr("font-size", 13)
+        .attr("fill", "#000");
+
+      // Tick 更新位置
+      simulation.on("tick", () => {
+        link
+          .attr("x1", d => d.source.x)
+          .attr("y1", d => d.source.y)
+          .attr("x2", d => d.target.x)
+          .attr("y2", d => d.target.y);
+
+        nodeGroup
+          .attr("transform", d => `translate(${d.x},${d.y})`);
+      });
+    }
+
+    async function fetchTokenUsage() {
+      try {
+        const res = await fetch(serverUrl + "/token_stats");
+        const data = await res.json();
+        document.getElementById("tokenCount").innerText = data.total_tokens || 0;
+      } catch (err) {
+        console.error("Token 获取失败", err);
+      }
+    }
+
+    // 每 5 秒刷新一次 token 数
+    setInterval(fetchTokenUsage, 5000);
+
+    // 页面首次加载时立即获取一次
+    fetchTokenUsage();
+
+    loadTopology();
+  </script>
+</body>
+</html>
+
+
