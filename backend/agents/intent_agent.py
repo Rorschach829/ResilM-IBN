@@ -1,6 +1,7 @@
 from openai import OpenAI
 import json
 import os
+from backend.utils.token_utils import record_tokens_from_response
 client = OpenAI(api_key="sk-692005762cca46ac9faf28703ae6efe0", base_url="https://api.deepseek.com")
 
 class IntentAgent:
@@ -23,21 +24,31 @@ class IntentAgent:
         template = self.load_prompt_template()
         return template.format(intent_text=intent_text)
     def intent_to_instruction(self, intent_text: str) -> dict:
-
+      # 现将response赋值为None，防止调用出错
+        response = None
         prompt = self.build_prompt(intent_text)
         messages = [
             {"role": "system", "content": "你是网络拓扑与控制指令生成助手，只输出JSON指令。"},
             {"role": "user", "content": prompt}
         ]
 
-        response = client.chat.completions.create(
-            model="deepseek-chat",
-            messages=messages,
-            stream=False
-        )
-        content = response.choices[0].message.content.strip()
+        try:
+          response = client.chat.completions.create(
+              model="deepseek-chat",
+              messages=messages,
+             stream=False
+          )
+          content = response.choices[0].message.content.strip()
+        except Exception as e:
+          print("LLM 错误:", e)
+
         # print("LLM 返回原始内容:\n", content)
 
+        # 如果LLM有响应则获取当前token消耗量
+        if response:
+          record_tokens_from_response(response)
+        else:
+          raise Exception("LLM 响应为空，无法继续解析")
         # 清除 markdown 格式包裹
         if content.startswith("```"):
             content = content.strip("`")

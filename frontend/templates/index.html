@@ -71,6 +71,12 @@
       <button onclick="sendAllIntents()">🚀 发送所有意图</button>
       <pre id="batch-response"></pre>
     </div>
+
+    <div id="tokenDisplay" style="position: fixed; bottom: 10px; right: 20px; background-color: #f0f0f0; padding: 8px; border-radius: 5px; font-size: 14px;">
+      Tokens Used: <span id="tokenCount">0</span>
+    </div>
+    
+    
   </div>
 
   <script>
@@ -247,6 +253,21 @@
       });
     }
 
+    async function fetchTokenUsage() {
+      try {
+        const res = await fetch(serverUrl + "/token_stats");
+        const data = await res.json();
+        document.getElementById("tokenCount").innerText = data.total_tokens || 0;
+      } catch (err) {
+        console.error("Token 获取失败", err);
+      }
+    }
+
+    // 每 5 秒刷新一次 token 数
+    setInterval(fetchTokenUsage, 5000);
+
+    // 页面首次加载时立即获取一次
+    fetchTokenUsage();
 
     loadTopology();
   </script>

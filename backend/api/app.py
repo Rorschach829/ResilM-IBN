@@ -4,6 +4,7 @@ from backend.agents.intent_agent import IntentAgent
 from backend.net_simulation.mininet_manager import run_mininet_code, get_current_topology, stop_topology,rebuild_topology
 from backend.net_simulation.instruction_executor import execute_instruction
 import backend.net_simulation.mininet_manager as mm
+from backend.utils.token_utils import get_total_tokens
 
 app = Flask(__name__, 
             template_folder="/data/gjw/Meta-IBN/frontend/templates", 
@@ -56,6 +57,11 @@ def topology():
 def stop():
     message = stop_topology()
     return jsonify({"message": message})
+
+# 获取当前token消耗
+@app.route("/token_stats", methods=["GET"])
+def token_stats():
+    return jsonify({"total_tokens": get_total_tokens()})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
