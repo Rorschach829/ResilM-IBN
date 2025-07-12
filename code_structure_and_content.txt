@@ -125,7 +125,7 @@ from backend.net_simulation.ryu_controller import send_flow_mod
 import requests
 from backend.utils.ryu_utils import get_all_switch_ids
 from backend.utils.utils import convert_switch_name_to_dpid
-
+import time
 def convert_switch_name_to_dpid(name: str) -> int:
     """
     将交换机名（如 's1'）转换为对应的 dpid（数字）
@@ -250,6 +250,7 @@ def execute_instruction(instruction: dict) -> str:
         mm.global_net.delNode(node)
         return f"✅ 已删除节点 {target}"
 
+# 对主机限速
     elif action == "limit_bandwidth":
         src = instruction.get("src_host")
         dst = instruction.get("dst_host")
@@ -266,14 +267,57 @@ def execute_instruction(instruction: dict) -> str:
         try:
             dev = src_host.name + "-eth0"
             rate_str = f"{rate}mbit"
-            burst = "32kbit"
-            latency = "400ms"
+            burst = "20kb"
+            latency = "70ms"
             cmd = f"tc qdisc add dev {dev} root tbf rate {rate_str} burst {burst} latency {latency}"
             result = src_host.cmd(cmd)
 
             return f"✅ 限速设置成功: {src} → {dst}, 速率限制为 {rate}Mbps\n执行结果:\n{result}"
         except Exception as e:
             return f"❌ 限速失败: {e}"
+# 对主机测速
+    elif action == "verify_bandwidth":
+        src = instruction.get("src_host")
+        dst = instruction.get("dst_host")
+
+        if not mm.global_net:
+            return "❌ 当前没有拓扑"
+
+        src_host = mm.global_net.get(src)
+        dst_host = mm.global_net.get(dst)
+
+        if not src_host or not dst_host:
+            return f"❌ 找不到主机 {src} 或 {dst}"
+
+        try:
+            # 启动目标主机 iperf 服务器, TCP模式
+            dst_host.cmd("iperf -s  -D")
+            time.sleep(1)
+
+            # 源主机发起 iperf 的TCP测试
+            result = src_host.cmd(f"iperf -c {dst_host.IP()} -t 5")
+            return f"📊 带宽测试结果 (h1 → h2):\n{result}"
+        except Exception as e:
+            return f"❌ 带宽测试失败: {e}"
+
+    elif action == "clear_bandwidth_limit":
+        host = instruction.get("host")
+
+        if not mm.global_net:
+            return "❌ 当前没有拓扑"
+
+        target = mm.global_net.get(host)
+        if not target:
+            return f"❌ 主机 {host} 不存在"
+
+        try:
+            dev = f"{host}-eth0"
+            cmd = f"tc qdisc del dev {dev} root"
+            result = target.cmd(cmd)
+
+            return f"✅ 已取消主机 {host} 的限速设置\n执行结果:\n{result}"
+        except Exception as e:
+            return f"❌ 取消限速失败: {e}"
 
 
     else:
@@ -762,11 +806,21 @@ class IntentAgent:
    - src_host: 源主机名，如 "h1"
    - dst_host: 目标主机名，如 "h2"
    - rate_mbps: 限速速率，单位 Mbps（整数）
-
 说明：
 - 用户可能会使用“带宽”、“网速”、“速率”、“速度”等说法来表达 bandwidth；
 - 用户可能会说“10M”、“10Mbps”、“10兆”、“10兆每秒”，都视为 10 Mbps；
 - 请统一将结果输出为整数 Mbps 并填入 rate_mbps 字段。
+
+7. verify_bandwidth
+   - src_host: 源主机名，如 "h1"
+   - dst_host: 目标主机名，如 "h2"
+
+8. clear_bandwidth_limit
+   - host: 要取消限速的主机名，如 "h1"
+说明：
+- 此意图用于取消对指定主机的所有限速规则；
+- 实现方法是调用 `tc qdisc del dev hX-eth0 root` 命令。
+
 
 
 示例：

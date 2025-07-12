@@ -179,6 +179,25 @@ def execute_instruction(instruction: dict) -> str:
         except Exception as e:
             return f"❌ 带宽测试失败: {e}"
 
+    elif action == "clear_bandwidth_limit":
+        host = instruction.get("host")
+
+        if not mm.global_net:
+            return "❌ 当前没有拓扑"
+
+        target = mm.global_net.get(host)
+        if not target:
+            return f"❌ 主机 {host} 不存在"
+
+        try:
+            dev = f"{host}-eth0"
+            cmd = f"tc qdisc del dev {dev} root"
+            result = target.cmd(cmd)
+
+            return f"✅ 已取消主机 {host} 的限速设置\n执行结果:\n{result}"
+        except Exception as e:
+            return f"❌ 取消限速失败: {e}"
+
 
     else:
         return f"❌ 未识别的指令类型: {action}"
