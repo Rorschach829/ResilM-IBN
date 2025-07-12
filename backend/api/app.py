@@ -5,7 +5,7 @@ from backend.net_simulation.mininet_manager import run_mininet_code, get_current
 from backend.net_simulation.instruction_executor import execute_instruction
 import backend.net_simulation.mininet_manager as mm
 from backend.utils.token_utils import get_total_tokens
-
+from backend.utils.logger import log_intent
 app = Flask(__name__, 
             template_folder="/data/gjw/Meta-IBN/frontend/templates", 
             static_folder="/data/gjw/Meta-IBN/frontend/static")
@@ -34,6 +34,7 @@ def handle_intent():
 
     try:
         output = execute_instruction(instruction)
+        log_intent(intent_text, instruction, output)
     except Exception as e:
         return jsonify({"error": f"指令执行失败: {str(e)}"}), 500
 
