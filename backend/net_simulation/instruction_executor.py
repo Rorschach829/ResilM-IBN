@@ -4,7 +4,7 @@ from backend.net_simulation.ryu_controller import send_flow_mod
 import requests
 from backend.utils.ryu_utils import get_all_switch_ids
 from backend.utils.utils import convert_switch_name_to_dpid
-
+import time
 def convert_switch_name_to_dpid(name: str) -> int:
     """
     将交换机名（如 's1'）转换为对应的 dpid（数字）
@@ -128,6 +128,57 @@ def execute_instruction(instruction: dict) -> str:
             return f"❌ 节点 {target} 不存在"
         mm.global_net.delNode(node)
         return f"✅ 已删除节点 {target}"
+
+# 对主机限速
+    elif action == "limit_bandwidth":
+        src = instruction.get("src_host")
+        dst = instruction.get("dst_host")
+        rate = instruction.get("rate_mbps")
+
+        if not mm.global_net:
+            return "❌ 当前没有拓扑"
+
+        src_host = mm.global_net.get(src)
+        if not src_host:
+            return f"❌ 源主机 {src} 不存在"
+
+        # 假设限速从 src 发出的所有流量（对 dst 限速，可拓展为双向限速）
+        try:
+            dev = src_host.name + "-eth0"
+            rate_str = f"{rate}mbit"
+            burst = "20kb"
+            latency = "70ms"
+            cmd = f"tc qdisc add dev {dev} root tbf rate {rate_str} burst {burst} latency {latency}"
+            result = src_host.cmd(cmd)
+
+            return f"✅ 限速设置成功: {src} → {dst}, 速率限制为 {rate}Mbps\n执行结果:\n{result}"
+        except Exception as e:
+            return f"❌ 限速失败: {e}"
+# 对主机测速
+    elif action == "verify_bandwidth":
+        src = instruction.get("src_host")
+        dst = instruction.get("dst_host")
+
+        if not mm.global_net:
+            return "❌ 当前没有拓扑"
+
+        src_host = mm.global_net.get(src)
+        dst_host = mm.global_net.get(dst)
+
+        if not src_host or not dst_host:
+            return f"❌ 找不到主机 {src} 或 {dst}"
+
+        try:
+            # 启动目标主机 iperf 服务器, TCP模式
+            dst_host.cmd("iperf -s  -D")
+            time.sleep(1)
+
+            # 源主机发起 iperf 的TCP测试
+            result = src_host.cmd(f"iperf -c {dst_host.IP()} -t 5")
+            return f"📊 带宽测试结果 (h1 → h2):\n{result}"
+        except Exception as e:
+            return f"❌ 带宽测试失败: {e}"
+
 
     else:
         return f"❌ 未识别的指令类型: {action}"

@@ -1,8 +1,7 @@
 ### 目录结构（仅含 .py / .html / .txt 文件）###
 
 Meta-IBN/
-    test_ds.py
-    test_mininet.py
+    code_structure_and_content.txt
     backend/
         __init__.py
         main.py
@@ -26,67 +25,17 @@ Meta-IBN/
             token_utils.py
             utils.py
     ryu_app/
-        PathIntentController.py
         __init__.py
+    test/
+        test_ds.py
+        test_mininet.py
         templates/
             index.html
 
 
 ### 文件内容 ###
 
-# 文件路径: ./test_ds.py
-# Please install OpenAI SDK first: `pip3 install openai`
-
-from openai import OpenAI
-
-client = OpenAI(api_key="sk-692005762cca46ac9faf28703ae6efe0", base_url="https://api.deepseek.com")
-
-response = client.chat.completions.create(
-    model="deepseek-chat",
-    messages=[
-        {"role": "system", "content": "You are a helpful assistant"},
-        {"role": "user", "content": "Hello"},
-    ],
-    stream=False
-)
-
-print(response.choices[0].message.content)
-
-# 文件路径: ./test_mininet.py
-from mininet.net import Mininet
-from mininet.node import RemoteController
-from mininet.cli import CLI
-from mininet.log import setLogLevel
-
-def test_network():
-    setLogLevel('info')
-
-    net = Mininet(controller=RemoteController)
-
-    # 添加远程控制器，IP和端口根据你的环境调整
-    c0 = net.addController('c0', controller=RemoteController, ip='127.0.0.1', port=6633)
-
-    # 添加主机和交换机
-    h1 = net.addHost('h1')
-    h2 = net.addHost('h2')
-    s1 = net.addSwitch('s1')
-
-    # 链接主机和交换机
-    net.addLink(h1, s1)
-    net.addLink(h2, s1)
-
-    net.start()
-
-    print("\n*** 测试所有主机之间的连通性 ***")
-    net.pingAll()
-
-    print("\n*** 进入Mininet命令行界面，可以执行命令 ***")
-    CLI(net)
-
-    net.stop()
-
-if __name__ == '__main__':
-    test_network()
+# 文件路径: ./code_structure_and_content.txt
 
 
 # 文件路径: ./backend/__init__.py
@@ -176,36 +125,6 @@ from backend.net_simulation.ryu_controller import send_flow_mod
 import requests
 from backend.utils.ryu_utils import get_all_switch_ids
 from backend.utils.utils import convert_switch_name_to_dpid
-import time
-import threading
-import multiprocessing
-import os
-
-def _ping_task(args):
-    src_name, dst_ip = args
-    from backend.net_simulation.mininet_manager import global_net
-    src = next(h for h in global_net.hosts if h.name == src_name)
-    src.cmd(f"ping -c1 -W1 {dst_ip} > /dev/null 2>&1")
-    return f"{src_name} -> {dst_ip} ✅"
-
-def preheat_mac_learning(net):
-    print("🔥 正在进行并发 Ping 预热...")
-    hosts = net.hosts
-    ping_jobs = []
-
-    for src in hosts:
-        for dst in hosts:
-            if src != dst:
-                ping_jobs.append((src.name, dst.IP()))
-
-    # 使用进程池并发执行 ping 操作（最多 8 并发）
-    with multiprocessing.Pool(processes=min(8, os.cpu_count())) as pool:
-        results = pool.map(_ping_task, ping_jobs)
-
-    for r in results:
-        print(r)
-    print("✅ MAC 学习完成")
-
 
 def convert_switch_name_to_dpid(name: str) -> int:
     """
@@ -217,37 +136,11 @@ def convert_switch_name_to_dpid(name: str) -> int:
 
 def execute_instruction(instruction: dict) -> str:
     action = instruction.get("action")
+
     if action == "create_topology":
-        # ✅ 提取合法主机名（来自 JSON 指令）
-        valid_hosts = instruction.get("hosts", [])
-        print("📤 向控制器注册合法主机:", valid_hosts)
-
-        # ✅ 注册合法主机到 Ryu 控制器
-        try:
-            resp = requests.post("http://localhost:8081/intent/valid_hosts", json={"hosts": valid_hosts})
-            if resp.status_code != 200:
-                print("❌ 合法主机注册失败，响应码:", resp.status_code)
-                return "❌ 合法主机注册失败"
-        except Exception as e:
-            print(f"❌ 注册合法主机异常: {e}")
-            return f"❌ 注册合法主机异常: {e}"
-
-        # ✅ 注册完成后，再调用 Mininet 创建拓扑
         result = mm.rebuild_topology(instruction)
-
-        # ✅ 预热 MAC 学习（通过 ping all）
-        from backend.net_simulation.mininet_manager import global_net
-        preheat_mac_learning(global_net)
-
-        # ✅ 构造一个可序列化的拓扑摘要
-        topo_summary = {
-            "message": "拓扑创建成功",
-            "num_hosts": len(global_net.hosts),
-            "num_switches": len(global_net.switches),
-            "host_list": [h.name for h in global_net.hosts],
-            "switch_list": [s.name for s in global_net.switches]
-        }
-        return topo_summary
+        print(f"[DEBUG] 拓扑创建结果: {result}")
+        return result
 
     elif action == "install_flowtable":
         flow_rule = {
@@ -281,8 +174,6 @@ def execute_instruction(instruction: dict) -> str:
         if not src_host:
             return f"❌ 主机 {src_name} 不存在"
 
-        # ✅ 加上这句预热目标主机，让其先发包触发 MAC 学习
-        # preheat_mac_learning(mm.global_net)
         # 此处使用 IP 执行 ping，而不是主机名
         result = src_host.cmd(f"ping -c 3 {target_ip}")
         success = "3 received" in result
@@ -359,11 +250,34 @@ def execute_instruction(instruction: dict) -> str:
         mm.global_net.delNode(node)
         return f"✅ 已删除节点 {target}"
 
+    elif action == "limit_bandwidth":
+        src = instruction.get("src_host")
+        dst = instruction.get("dst_host")
+        rate = instruction.get("rate_mbps")
+
+        if not mm.global_net:
+            return "❌ 当前没有拓扑"
+
+        src_host = mm.global_net.get(src)
+        if not src_host:
+            return f"❌ 源主机 {src} 不存在"
+
+        # 假设限速从 src 发出的所有流量（对 dst 限速，可拓展为双向限速）
+        try:
+            dev = src_host.name + "-eth0"
+            rate_str = f"{rate}mbit"
+            burst = "32kbit"
+            latency = "400ms"
+            cmd = f"tc qdisc add dev {dev} root tbf rate {rate_str} burst {burst} latency {latency}"
+            result = src_host.cmd(cmd)
+
+            return f"✅ 限速设置成功: {src} → {dst}, 速率限制为 {rate}Mbps\n执行结果:\n{result}"
+        except Exception as e:
+            return f"❌ 限速失败: {e}"
+
+
     else:
         return f"❌ 未识别的指令类型: {action}"
-
-
-
 
 
 # 文件路径: ./backend/net_simulation/mininet_manager.py
@@ -452,7 +366,7 @@ def rebuild_topology(intent_json: dict) -> str:
         global_net = exec_globals.get("net")
         if not global_net:
             raise Exception("生成的代码中未创建 net 实例")
-        return global_net
+        return "✅ 拓扑创建成功"
     except Exception as e:
         global_net = None
         return f"❌ 拓扑创建失败: {str(e)}"
@@ -474,43 +388,214 @@ def build_mininet_code_from_json(data: dict) -> str:
     switches = data.get("switches", [])
     links = data.get("links", [])
     controller = data.get("controller", {"type": "RemoteController", "ip": "127.0.0.1", "port": 6633})
+    
+    # 动态生成主机IP映射
+    host_ip_map = {}
+    for i, host in enumerate(hosts):
+        host_ip_map[host] = f"10.0.0.{i + 1}"
+    
+    # 动态生成交换机DPID映射
+    switch_dpid_map = {}
+    for i, switch in enumerate(switches):
+        switch_dpid_map[switch] = i + 1
 
     lines = [
         "from mininet.net import Mininet",
-        "from mininet.cli import CLI",
+        "from mininet.cli import CLI", 
         "from mininet.log import setLogLevel",
         "from mininet.node import RemoteController",
+        "import time",
+        "import requests",
+        "import json",
         "",
         "setLogLevel('info')",
         "",
         f"net = Mininet(controller=None)",
         f"c0 = net.addController('c0', controller=RemoteController, ip='{controller['ip']}', port={controller['port']})",
+        "",
+        "# 动态添加主机",
+        "hosts_info = {}"
     ]
 
-    # for h in hosts:
-    #     lines.append(f"{h} = net.addHost('{h}')")
+    # 动态添加主机
+    for host in hosts:
+        ip = host_ip_map[host]
+        lines.append(f"{host} = net.addHost('{host}', ip='{ip}')")
+        lines.append(f"hosts_info['{host}'] = {{'ip': '{ip}', 'node': {host}}}")
 
-    # 添加主机并分配ip地址
-    for i, h in enumerate(hosts):
-        ip = f"10.0.0.{i + 1}"
-        lines.append(f"{h} = net.addHost('{h}', ip='{ip}')")
+    lines.append("")
+    lines.append("# 动态添加交换机")
+    lines.append("switches_info = {}")
+    
+    # 动态添加交换机
+    for switch in switches:
+        dpid = switch_dpid_map[switch]
+        lines.append(f"{switch} = net.addSwitch('{switch}')")
+        lines.append(f"switches_info['{switch}'] = {{'dpid': {dpid}, 'node': {switch}}}")
 
-    for s in switches:
-        lines.append(f"{s} = net.addSwitch('{s}')")
+    lines.append("")
+    lines.append("# 动态添加链路")
     for link in links:
         lines.append(f"net.addLink({link['src']}, {link['dst']})")
 
     lines += [
+        "",
         "net.start()",
-        # ✅ 禁用所有主机 IPv6
+        "",
+        "# 禁用所有主机 IPv6",
         "for h in net.hosts:",
         "    h.cmd('sysctl -w net.ipv6.conf.all.disable_ipv6=1')",
-        "# CLI(net)  # 已禁用，为了非阻塞执行",
-        ""
+        "",
+        "# 显示动态网络信息",
+        "print('\\n=== 动态网络拓扑信息 ===')",
+        "print(f'主机数量: {len(hosts_info)}')",
+        "for host_name, info in hosts_info.items():",
+        "    print(f'{host_name}: {info[\"ip\"]} (MAC: {info[\"node\"].MAC()})')",
+        "",
+        "print(f'\\n交换机数量: {len(switches_info)}')",
+        "for switch_name, info in switches_info.items():",
+        "    print(f'{switch_name}: DPID {info[\"dpid\"]} ({info[\"node\"].dpid})')",
+        "",
+        "print('\\n=== 链路信息 ===')",
+        "for link in net.links:",
+        "    print(f'{link.intf1.node.name}({link.intf1.name}) <-> {link.intf2.node.name}({link.intf2.name})')",
+        "",
+        "# 智能等待STP收敛",
+        "print('\\n=== 等待STP收敛，请稍候... ===')",
+        "def wait_for_stp_convergence():",
+        "    max_wait = 35  # 最大等待35秒",
+        "    check_interval = 5  # 每5秒检查一次",
+        "    waited = 0",
+        "    ",
+        "    while waited < max_wait:",
+        "        print(f'检查STP状态... (已等待{waited}秒)')",
+        "        try:",
+        "            # 动态检查所有交换机的流表",
+        "            has_flows = False",
+        "            for switch_name, info in switches_info.items():",
+        "                response = requests.get(f'http://localhost:8081/stats/flow/{info[\"dpid\"]}', timeout=3)",
+        "                if response.status_code == 200:",
+        "                    flows = response.json()",
+        "                    if len(flows.get(str(info['dpid']), [])) > 0:",
+        "                        has_flows = True",
+        "                        break",
+        "            ",
+        "            if has_flows:",
+        "                print(f'检测到流表条目，STP可能已收敛 (等待了{waited}秒)')",
+        "                time.sleep(5)  # 再等5秒确保稳定",
+        "                return waited + 5",
+        "        except:",
+        "            pass",
+        "        ",
+        "        time.sleep(check_interval)",
+        "        waited += check_interval",
+        "    ",
+        "    print(f'达到最大等待时间{max_wait}秒')",
+        "    return max_wait",
+        "",
+        "actual_wait = wait_for_stp_convergence()",
+        "print(f'STP收敛等待完成！(实际等待: {actual_wait}秒)')",
+        "",
+        "# 动态检查STP状态",
+        "def check_stp_status():",
+        "    print('\\n=== 检查STP状态 ===')",
+        "    try:",
+        "        for switch_name, info in switches_info.items():",
+        "            dpid = info['dpid']",
+        "            # 检查流表",
+        "            response = requests.get(f'http://localhost:8081/stats/flow/{dpid}', timeout=5)",
+        "            if response.status_code == 200:",
+        "                flows = response.json()",
+        "                flow_count = len(flows.get(str(dpid), []))",
+        "                print(f'{switch_name}(DPID:{dpid})流表条目数: {flow_count}')",
+        "            ",
+        "            # 检查端口状态",
+        "            response = requests.get(f'http://localhost:8081/stats/port/{dpid}', timeout=5)",
+        "            if response.status_code == 200:",
+        "                ports = response.json()",
+        "                port_count = len(ports.get(str(dpid), []))",
+        "                print(f'{switch_name}(DPID:{dpid})端口数: {port_count}')",
+        "    except Exception as e:",
+        "        print(f'无法获取STP状态: {e}')",
+        "",
+        "check_stp_status()",
+        "",
+        "# 动态添加ARP条目",
+        "print('\\n=== 动态添加ARP条目 ===')",
+        "def add_arp_entries():",
+        "    # 为所有主机对添加ARP条目",
+        "    host_list = list(hosts_info.keys())",
+        "    for i, host1_name in enumerate(host_list):",
+        "        for host2_name in host_list[i+1:]:",
+        "            host1 = hosts_info[host1_name]['node']",
+        "            host2 = hosts_info[host2_name]['node']",
+        "            ",
+        "            # 互相添加ARP条目",
+        "            host1.cmd(f'arp -s {host2.IP()} {host2.MAC()}')",
+        "            host2.cmd(f'arp -s {host1.IP()} {host1.MAC()}')",
+        "    ",
+        "    print(f'已为{len(host_list)}个主机添加ARP条目')",
+        "",
+        "add_arp_entries()",
+        "",
+        "# 动态测试连通性",
+        "print('\\n=== 动态连通性测试 ===')",
+        "def test_connectivity():",
+        "    host_list = list(hosts_info.keys())",
+        "    if len(host_list) >= 2:",
+        "        # 测试第一个和最后一个主机",
+        "        first_host_name = host_list[0]",
+        "        last_host_name = host_list[-1]",
+        "        ",
+        "        first_host = hosts_info[first_host_name]['node']",
+        "        last_host = hosts_info[last_host_name]['node']",
+        "        ",
+        "        print(f'测试 {first_host_name}({first_host.IP()}) -> {last_host_name}({last_host.IP()})')",
+        "        ",
+        "        # Mininet内置ping测试",
+        "        result = net.ping([first_host, last_host])",
+        "        print(f'Mininet ping结果: {result}% 丢包率')",
+        "        ",
+        "        # 详细的手动ping测试",
+        "        print('\\n--- 详细ping测试 ---')",
+        "        output = first_host.cmd(f'ping -c 3 -W 2 {last_host.IP()}')",
+        "        print(f'{first_host_name} ping {last_host_name} 输出:\\n{output}')",
+        "        ",
+        "        # 反向ping测试",
+        "        print('\\n--- 反向ping测试 ---')",
+        "        output = last_host.cmd(f'ping -c 3 -W 2 {first_host.IP()}')",
+        "        print(f'{last_host_name} ping {first_host_name} 输出:\\n{output}')",
+        "        ",
+        "        # 检查路由表",
+        "        print('\\n--- 路由信息 ---')",
+        "        print(f'{first_host_name}路由表: {first_host.cmd(\"ip route\").strip()}')",
+        "        print(f'{last_host_name}路由表: {last_host.cmd(\"ip route\").strip()}')",
+        "        ",
+        "        # 检查ARP表",
+        "        print('\\n--- ARP表 ---')",
+        "        print(f'{first_host_name} ARP表: {first_host.cmd(\"arp -a\").strip()}')",
+        "        print(f'{last_host_name} ARP表: {last_host.cmd(\"arp -a\").strip()}')",
+        "    else:",
+        "        print('主机数量不足，无法进行连通性测试')",
+        "",
+        "test_connectivity()",
+        "",
+        "# 全网ping测试",
+        "print('\\n=== 全网连通性测试 ===')",
+        "if len(hosts_info) > 1:",
+        "    net.pingAll()",
+        "else:",
+        "    print('只有一个主机，跳过全网测试')",
+        "",
+        "# 提供进入CLI的选项",
+        "print('\\n=== 测试完成 ===')",
+        "print('如需进入交互模式，请取消下面一行的注释')",
+        "# CLI(net)",
+        "",
+        "# 清理网络（如果不需要CLI）"
     ]
 
     return "\n".join(lines)
-
 
 # 文件路径: ./backend/net_simulation/ryu_controller.py
 import requests
@@ -673,6 +758,17 @@ class IntentAgent:
 - 不要出现 null、None 或空 key。
 - 输出的 JSON 结构必须和上述 action 类型相匹配，否则视为解析失败。
 
+6. limit_bandwidth
+   - src_host: 源主机名，如 "h1"
+   - dst_host: 目标主机名，如 "h2"
+   - rate_mbps: 限速速率，单位 Mbps（整数）
+
+说明：
+- 用户可能会使用“带宽”、“网速”、“速率”、“速度”等说法来表达 bandwidth；
+- 用户可能会说“10M”、“10Mbps”、“10兆”、“10兆每秒”，都视为 10 Mbps；
+- 请统一将结果输出为整数 Mbps 并填入 rate_mbps 字段。
+
+
 示例：
 
 当用户意图为：删除阻止 h1 ping h2 的流表规则
@@ -833,205 +929,62 @@ def convert_switch_name_to_dpid(name: str) -> int:
         raise ValueError(f"交换机名称不合法: {name}")
 
 
-# 文件路径: ./ryu_app/PathIntentController.py
-# PathIntentController.py
-
-from ryu.base import app_manager
-from ryu.controller import ofp_event
-from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER, set_ev_cls
-from ryu.ofproto import ofproto_v1_3
-from ryu.lib.packet import packet, ethernet
-from ryu.topology import event
-from ryu.app.wsgi import ControllerBase, WSGIApplication, route
-import requests
-from webob import Response
-import json
-
-INTENT_INSTANCE_NAME = 'intent_api_app'
-INTENT_REST_PATH = '/intent/flow'
-
-
-class PathIntentController(app_manager.RyuApp):
-    OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
-    _CONTEXTS = {'wsgi': WSGIApplication}
-
-    def __init__(self, *args, **kwargs):
-        super(PathIntentController, self).__init__(*args, **kwargs)
-        wsgi = kwargs['wsgi']
-        self.topology_api_app = self
-
-        self.switches = {}
-        self.ports = {}
-        self.host_mac_table = {}
-        self.mac_to_host_table = {}
-        self.valid_hosts = set()
-        self.seen_invalid_macs = set()
-
-        wsgi.register(IntentRestAPI, {INTENT_INSTANCE_NAME: self})
-
-    @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
-    def switch_features_handler(self, ev):
-        datapath = ev.msg.datapath
-        self.switches[datapath.id] = datapath
-        parser = datapath.ofproto_parser
-        ofproto = datapath.ofproto
-
-        # ✅ 安装默认 miss-flow 表项：转发给控制器
-        match = parser.OFPMatch()
-        actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
-                                          ofproto.OFPCML_NO_BUFFER)]
-        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,
-                                             actions)]
-        mod = parser.OFPFlowMod(datapath=datapath, priority=0,
-                                match=match, instructions=inst)
-        datapath.send_msg(mod)
-
-    @set_ev_cls(event.EventLinkAdd)
-    def link_add_handler(self, ev):
-        src_dpid = ev.link.src.dpid
-        dst_dpid = ev.link.dst.dpid
-        self.ports[(src_dpid, dst_dpid)] = ev.link.src.port_no
-
-    @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
-    def _packet_in_handler(self, ev):
-        msg = ev.msg
-        datapath = msg.datapath
-        parser = datapath.ofproto_parser
-        in_port = msg.match['in_port']
-        pkt = packet.Packet(msg.data)
-        eth = pkt.get_protocol(ethernet.ethernet)
-
-        src = str(eth.src).lower()
-        dst = str(eth.dst).lower()
-
-        # ✅ 忽略广播和 LLDP 包
-        if dst == "ff:ff:ff:ff:ff:ff" or dst.startswith("01:80:c2"):
-            return
-
-        # ✅ 已学习则跳过
-        if src in self.mac_to_host_table:
-            return
-
-        # ✅ 学习主机数量限制
-        if len(self.host_mac_table) >= len(self.valid_hosts):
-            if src not in self.seen_invalid_macs:
-                self.logger.warning(f"⚠️ 未知主机 MAC: {src}，已达到主机上限")
-                self.seen_invalid_macs.add(src)
-            return
-
-        # ✅ 分配 h1-hN 名称
-        for hname in sorted(self.valid_hosts):
-            if hname not in self.host_mac_table:
-                self.host_mac_table[hname] = src
-                self.mac_to_host_table[src] = hname
-                self.logger.info(f"📌 学习到主机: {hname} -> {src}")
-                break
-
-    def install_path_flow(self, src_mac, dst_mac, path, match_fields, actions_str, priority):
-        for i in range(len(path) - 1):
-            curr = path[i]
-            nxt = path[i + 1]
-
-            if curr.startswith('h') or nxt.startswith('h'):
-                self.logger.info(f"⏭️ 跳过非交换机段: {curr} -> {nxt}")
-                continue
-
-            try:
-                curr_dpid = int(curr[1:])
-                next_dpid = int(nxt[1:])
-            except ValueError:
-                self.logger.warning(f"❌ 非法节点名称: {curr}, {nxt}")
-                continue
-
-            datapath = self.switches.get(curr_dpid)
-            if not datapath:
-                self.logger.warning(f"❌ Datapath {curr_dpid} not found")
-                continue
-
-            out_port = self.ports.get((curr_dpid, next_dpid))
-            if out_port is None:
-                self.logger.warning(f"❌ No link from {curr_dpid} to {next_dpid}")
-                continue
-
-            parser = datapath.ofproto_parser
-            ofproto = datapath.ofproto
-
-            match_dict = {"eth_src": src_mac, "eth_dst": dst_mac}
-            for k, v in match_fields.items():
-                match_dict["eth_type" if k == "dl_type" else k] = v
-
-            match = parser.OFPMatch(**match_dict)
-            actions = [] if actions_str.upper() == "DENY" else [parser.OFPActionOutput(out_port)]
-            inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
-            mod = parser.OFPFlowMod(datapath=datapath, priority=priority,
-                                    match=match, instructions=inst)
-            datapath.send_msg(mod)
-
-            self.logger.info(f"✅ 下发: {curr}({curr_dpid}) → {nxt}({next_dpid}) | port={out_port}")
-
-
-class IntentRestAPI(ControllerBase):
-    def __init__(self, req, link, data, **config):
-        super(IntentRestAPI, self).__init__(req, link, data, **config)
-        self.intent_app = data[INTENT_INSTANCE_NAME]
-
-    @route('intent', INTENT_REST_PATH, methods=['POST'])
-    def install_intent_flow(self, req, **kwargs):
-        try:
-            body = req.json if req.body else {}
-            print(f"\n[DEBUG] 收到路径意图请求:\n{json.dumps(body, indent=2)}\n")
-            src_host = body.get("source")
-            dst_host = body.get("target")
-            path = body.get("path")
-            extra = body.get("extra", {})
-            match_fields = extra.get("match", {})
-            actions_str = extra.get("actions", "ALLOW")
-            priority = extra.get("priority", 100)
-
-            if not (src_host and dst_host and path):
-                return Response(status=400, body="❌ 缺少必要字段")
-
-            src_mac = self.intent_app.host_mac_table.get(src_host)
-            dst_mac = self.intent_app.host_mac_table.get(dst_host)
-
-            if not src_mac or not dst_mac:
-                return Response(status=400, body=f"❌ 无法找到主机 MAC: {src_host}({src_mac}), {dst_host}({dst_mac})")
-
-            self.intent_app.install_path_flow(src_mac, dst_mac, path, match_fields, actions_str, priority)
-            return Response(status=200, body=f"✅ 成功安装流表: {src_host} -> {dst_host} via {path}")
-
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            return Response(status=500, body=f"❌ 控制器异常: {str(e)}")
-
-    @route('intent', '/intent/valid_hosts', methods=['POST'])
-    def register_valid_hosts(self, req, **kwargs):
-        try:
-            body = req.json
-            hosts = body.get("hosts", [])
-            new_hosts_set = set(hosts)
-
-            print(f"📥 注册合法主机列表: {hosts}")
-
-            if new_hosts_set != self.intent_app.valid_hosts:
-                self.intent_app.valid_hosts = new_hosts_set
-                self.intent_app.host_mac_table.clear()
-                self.intent_app.mac_to_host_table.clear()
-                self.intent_app.seen_invalid_macs.clear()
-                self.intent_app.logger.info("✅ 已清空主机学习缓存，准备重新学习")
-            else:
-                self.intent_app.logger.info("📎 合法主机列表未变化，跳过清空学习缓存")
-
-            return Response(status=200, body=json.dumps({
-                "message": "✅ 合法主机注册成功",
-                "valid_hosts": hosts
-            }))
-        except Exception as e:
-            return Response(status=500, body=f"❌ 注册失败: {str(e)}")
-
-
 # 文件路径: ./ryu_app/__init__.py
+
+
+# 文件路径: ./test/test_ds.py
+# Please install OpenAI SDK first: `pip3 install openai`
+
+from openai import OpenAI
+
+client = OpenAI(api_key="sk-692005762cca46ac9faf28703ae6efe0", base_url="https://api.deepseek.com")
+
+response = client.chat.completions.create(
+    model="deepseek-chat",
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant"},
+        {"role": "user", "content": "Hello"},
+    ],
+    stream=False
+)
+
+print(response.choices[0].message.content)
+
+# 文件路径: ./test/test_mininet.py
+from mininet.net import Mininet
+from mininet.node import RemoteController
+from mininet.cli import CLI
+from mininet.log import setLogLevel
+
+def test_network():
+    setLogLevel('info')
+
+    net = Mininet(controller=RemoteController)
+
+    # 添加远程控制器，IP和端口根据你的环境调整
+    c0 = net.addController('c0', controller=RemoteController, ip='127.0.0.1', port=6633)
+
+    # 添加主机和交换机
+    h1 = net.addHost('h1')
+    h2 = net.addHost('h2')
+    s1 = net.addSwitch('s1')
+
+    # 链接主机和交换机
+    net.addLink(h1, s1)
+    net.addLink(h2, s1)
+
+    net.start()
+
+    print("\n*** 测试所有主机之间的连通性 ***")
+    net.pingAll()
+
+    print("\n*** 进入Mininet命令行界面，可以执行命令 ***")
+    CLI(net)
+
+    net.stop()
+
+if __name__ == '__main__':
+    test_network()
 
 
 # 文件路径: ./frontend/templates/index.html

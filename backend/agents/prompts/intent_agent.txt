@@ -51,6 +51,21 @@
 - 不要出现 null、None 或空 key。
 - 输出的 JSON 结构必须和上述 action 类型相匹配，否则视为解析失败。
 
+6. limit_bandwidth
+   - src_host: 源主机名，如 "h1"
+   - dst_host: 目标主机名，如 "h2"
+   - rate_mbps: 限速速率，单位 Mbps（整数）
+说明：
+- 用户可能会使用“带宽”、“网速”、“速率”、“速度”等说法来表达 bandwidth；
+- 用户可能会说“10M”、“10Mbps”、“10兆”、“10兆每秒”，都视为 10 Mbps；
+- 请统一将结果输出为整数 Mbps 并填入 rate_mbps 字段。
+
+7. verify_bandwidth
+   - src_host: 源主机名，如 "h1"
+   - dst_host: 目标主机名，如 "h2"
+
+
+
 示例：
 
 当用户意图为：删除阻止 h1 ping h2 的流表规则
