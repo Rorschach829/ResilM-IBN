@@ -1,6 +1,6 @@
 from ryu.base import app_manager
 from ryu.controller import ofp_event
-from ryu.controller.handler import MAIN_DISPATCHER, CONFIG_DISPATCHER, set_ev_cls
+from ryu.controller.handler import MAIN_DISPATCHER, CONFIG_DISPATCHER, DEAD_DISPATCHER, set_ev_cls
 from ryu.ofproto import ofproto_v1_3
 from ryu.lib.packet import packet, ethernet, arp, ipv4
 from ryu.topology import event
@@ -25,6 +25,8 @@ class PathIntentController(app_manager.RyuApp):
         self.hosts = {}  # IP -> (DPID, Port, MAC)
         self.net = nx.DiGraph()
         self.dpset = kwargs['dpset']
+
+        self.datapaths = {} # ✅ 用于记录连接的交换机 datapath
 
         wsgi.register(IntentWebController, {intent_instance_name: self})
 
@@ -68,9 +70,38 @@ class PathIntentController(app_manager.RyuApp):
         self.mac_to_port.setdefault(dpid, {})
         self.mac_to_port[dpid][src] = in_port
 
-        if src not in self.hosts:
-            self.logger.info(f"注册新主机: {src} (dpid={dpid}, port={in_port})")
-            self.hosts[src] = (dpid, in_port, src)
+        src_mac = src.lower()
+
+        # === 主机注册增强逻辑 ===
+
+        # 跳过广播、组播、STP MAC
+        if src_mac.startswith("ff:ff") or src_mac.startswith("01:80:c2") or src_mac.startswith("33:33"):
+            self.logger.debug(f"[过滤] 忽略非法源 MAC: {src_mac}")
+            return
+
+        # 已注册则检查是否重复注册
+        if src_mac in self.hosts:
+            old_dpid, old_port, _ = self.hosts[src_mac]
+            if old_dpid == dpid and old_port == in_port:
+                return
+            else:
+                self.logger.debug(f"[主机重复学习] 已存在 {src_mac}，忽略新位置 dpid={dpid}, port={in_port}")
+                return
+
+        # 控制最大主机注册数（调试用）
+        if len(self.hosts) > 20:
+            self.logger.warning(f"[警告] 主机数量异常: 当前 {len(self.hosts)}，可能存在伪主机")
+            return
+
+        # 注册主机
+        self.logger.info(f"✅ 注册新主机: {src_mac} (dpid={dpid}, port={in_port})")
+        self.hosts[src_mac] = (dpid, in_port, src_mac)
+
+
+
+        # if src not in self.hosts:
+        #     self.logger.info(f"注册新主机: {src} (dpid={dpid}, port={in_port})")
+        #     self.hosts[src] = (dpid, in_port, src)
 
         # flooding only for ARP
         if pkt.get_protocol(arp.arp):
@@ -83,6 +114,7 @@ class PathIntentController(app_manager.RyuApp):
             )
             datapath.send_msg(out)
             return
+
     @set_ev_cls(event.EventLinkAdd)
     def update_links(self, ev):
         link = ev.link
@@ -111,7 +143,18 @@ class PathIntentController(app_manager.RyuApp):
         self.logger.info(f"当前 NetworkX 图的节点: {list(self.net.nodes)}")
         self.logger.info(f"当前 NetworkX 图的边: {list(self.net.edges)}")
 
+
     def install_path_between_hosts(self, src_host: str, dst_host: str):
+
+                # 检查路径图中是否存在未注册的 DPID
+        registered_dpids = set(self.datapaths.keys())
+        all_path_dpids = set(self.net.nodes())
+
+        invalid_dpids = all_path_dpids - registered_dpids
+        if invalid_dpids:
+            self.logger.error(f"[❌错误] NetworkX 图中存在未连接的 DPID: {invalid_dpids}")
+            raise Exception(f"网络图中包含未注册交换机 DPID: {invalid_dpids}")
+
         self.logger.info(f"📌 [注册主机总数]: {len(self.hosts)}")
         self.logger.info(f"📌 [主机注册信息]:")
         for mac, (dpid, port, _) in self.hosts.items():
@@ -170,7 +213,7 @@ class PathIntentController(app_manager.RyuApp):
             self.add_flow(dp, 1, match, actions)
             self.logger.info(f"🚀 下发回程流表: dpid={cur}, src={dst_mac}, dst={src_mac}, out_port={out_port}")
 
-        # 添加主机默认接入流表（以便非路径流量也能送到主机）
+        # 添加主机默认接入流表（以便非路径流量也能送到主机）★7.13这一天的目的就是为了让gpt写出下面这几行。气死我了。
         for mac, (dpid, port, _) in self.hosts.items():
             dp = self.get_datapath(dpid)
             match = dp.ofproto_parser.OFPMatch(eth_dst=mac)
@@ -178,13 +221,25 @@ class PathIntentController(app_manager.RyuApp):
             self.add_flow(dp, 1, match, actions)
             self.logger.info(f"🔁 添加主机接入流表: dpid={dpid}, dst={mac}, out_port={port}")
 
-    
 
     def get_datapath(self, dpid):
         for dp_id, dp in self.dpset.get_all():
             if dp.id == dpid:
                 return dp
         raise Exception(f"找不到对应的datapath: {dpid}")
+
+    @set_ev_cls(ofp_event.EventOFPStateChange, [MAIN_DISPATCHER, DEAD_DISPATCHER])
+    def state_change_handler(self, ev):
+        dp = ev.datapath
+        if ev.state == MAIN_DISPATCHER:
+            if dp.id not in self.datapaths:
+                self.logger.info(f"✅ 新交换机上线: DPID={dp.id}")
+            self.datapaths[dp.id] = dp
+        elif ev.state == DEAD_DISPATCHER:
+            if dp.id in self.datapaths:
+                self.logger.info(f"❌ 交换机离线: DPID={dp.id}")
+                del self.datapaths[dp.id]
+
 
 class IntentWebController(ControllerBase):
     def __init__(self, req, link, data, **config):
