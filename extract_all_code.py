@@ -35,7 +35,7 @@ def read_file_content(path):
 def main():
     base_path = os.getcwd()
     self_filename = os.path.basename(__file__)  # 当前脚本的文件名
-    output_file = os.path.join(base_path, 'code_structure_and_content.txt')
+    output_file = os.path.join(base_path, 'MyMeta-IBN_code_structure_and_content.txt')
 
     code_structure, target_files = list_target_files(base_path, self_filename)
 

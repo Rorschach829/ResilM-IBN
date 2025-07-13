@@ -96,35 +96,6 @@ def rebuild_topology(intent_json: dict) -> str:
         global_net = None
         return f"❌ 拓扑创建失败: {str(e)}"
 
-
-
-# 原版
-# def rebuild_topology(intent_json: dict) -> str:
-#     global global_net
-
-#     # cleanup()
-
-#     # 若已有拓扑，先销毁
-#     if global_net:
-#         try:
-#             global_net.stop()
-#             global_net = None
-#         except Exception as e:
-#             print(f"销毁旧拓扑失败: {e}")
-
-#     code = build_mininet_code_from_json(intent_json)
-
-#     exec_globals = {}
-#     try:
-#         exec(code, exec_globals)
-#         global_net = exec_globals.get("net")
-#         if not global_net:
-#             raise Exception("生成的代码中未创建 net 实例")
-#         return "✅ 拓扑创建成功"
-#     except Exception as e:
-#         global_net = None
-#         return f"❌ 拓扑创建失败: {str(e)}"
-
 def stop_topology() -> str:
     global global_net
     if not global_net:
@@ -216,34 +187,11 @@ def build_mininet_code_from_json(data: dict, enable_stp: bool = True) -> str:
         "",
 
         f"if {str(enable_stp)}:",
+        "    from backend.utils.topology_utils import wait_for_stp_convergence",
         "    print('\\n=== 等待STP收敛，请稍候... ===')",
-        "    def wait_for_stp_convergence():",
-        "        max_wait = 35",
-        "        check_interval = 5",
-        "        waited = 0",
-        "        while waited < max_wait:",
-        "            print(f'检查STP状态... (已等待{waited}秒)')",
-        "            try:",
-        "                has_flows = False",
-        "                for switch_name, info in switches_info.items():",
-        "                    response = requests.get(f'http://localhost:8081/stats/flow/{info[\"dpid\"]}', timeout=3)",
-        "                    if response.status_code == 200:",
-        "                        flows = response.json()",
-        "                        if len(flows.get(str(info['dpid']), [])) > 0:",
-        "                            has_flows = True",
-        "                            break",
-        "                if has_flows:",
-        "                    print(f'检测到流表条目，STP可能已收敛 (等待了{waited}秒)')",
-        "                    time.sleep(5)",
-        "                    return waited + 5",
-        "            except:",
-        "                pass",
-        "            time.sleep(check_interval)",
-        "            waited += check_interval",
-        "        print(f'达到最大等待时间{max_wait}秒')",
-        "        return max_wait",
+        "    wait_for_stp_convergence(switches_info)",
         "",
-        "    actual_wait = wait_for_stp_convergence()",
+        "    actual_wait = wait_for_stp_convergence(switches_info)",
         "    print(f'STP收敛等待完成！(实际等待: {actual_wait}秒)')",
         "else:",
         "    print('\\n[优化] 拓扑无环，跳过 STP 收敛等待')",
@@ -278,69 +226,10 @@ def build_mininet_code_from_json(data: dict, enable_stp: bool = True) -> str:
         "    # 为所有主机对添加ARP条目",
         "    from backend.utils.arp_utils import configure_static_arp",
         "    configure_static_arp(hosts_info)",
-
-        # "    host_list = list(hosts_info.keys())",
-        # "    for i, host1_name in enumerate(host_list):",
-        # "        for host2_name in host_list[i+1:]:",
-        # "            host1 = hosts_info[host1_name]['node']",
-        # "            host2 = hosts_info[host2_name]['node']",
-        # "            ",
-        # "            # 互相添加ARP条目",
-        # "            host1.cmd(f'arp -s {host2.IP()} {host2.MAC()}')",
-        # "            host2.cmd(f'arp -s {host1.IP()} {host1.MAC()}')",
-        "    ",
-        # "    print(f'已为{len(host_list)}个主机添加ARP条目')",
         "",
         "add_arp_entries()",
         "",
-        "# 动态测试连通性",
-        "print('\\n=== 动态连通性测试 ===')",
-        "def test_connectivity():",
-        "    host_list = list(hosts_info.keys())",
-        "    if len(host_list) >= 2:",
-        "        # 测试第一个和最后一个主机",
-        "        first_host_name = host_list[0]",
-        "        last_host_name = host_list[-1]",
-        "        ",
-        "        first_host = hosts_info[first_host_name]['node']",
-        "        last_host = hosts_info[last_host_name]['node']",
-        "        ",
-        "        print(f'测试 {first_host_name}({first_host.IP()}) -> {last_host_name}({last_host.IP()})')",
-        "        ",
-        "        # Mininet内置ping测试",
-        "        result = net.ping([first_host, last_host])",
-        "        print(f'Mininet ping结果: {result}% 丢包率')",
-        "        ",
-        "        # 详细的手动ping测试",
-        "        print('\\n--- 详细ping测试 ---')",
-        "        output = first_host.cmd(f'ping -c 3 -W 2 {last_host.IP()}')",
-        "        print(f'{first_host_name} ping {last_host_name} 输出:\\n{output}')",
-        "        ",
-        "        # 反向ping测试",
-        "        print('\\n--- 反向ping测试 ---')",
-        "        output = last_host.cmd(f'ping -c 3 -W 2 {first_host.IP()}')",
-        "        print(f'{last_host_name} ping {first_host_name} 输出:\\n{output}')",
-        "        ",
-        "        # 检查路由表",
-        "        print('\\n--- 路由信息 ---')",
-        "        print(f'{first_host_name}路由表: {first_host.cmd(\"ip route\").strip()}')",
-        "        print(f'{last_host_name}路由表: {last_host.cmd(\"ip route\").strip()}')",
-        "        ",
-        "        # 检查ARP表",
-        "        print('\\n--- ARP表 ---')",
-        "        print(f'{first_host_name} ARP表: {first_host.cmd(\"arp -a\").strip()}')",
-        "        print(f'{last_host_name} ARP表: {last_host.cmd(\"arp -a\").strip()}')",
-        "    else:",
-        "        print('主机数量不足，无法进行连通性测试')",
         "",
-        "test_connectivity()",
-        "",
-        "# 全网ping测试",
-        "print('\\n=== 全网连通性测试 ===')",
-        "if len(hosts_info) > 1:",
-        "    net.pingAll()",
-        "else:",
-        "    print('只有一个主机，跳过全网测试')",
         "",
         "# 提供进入CLI的选项",
         "print('\\n=== 测试完成 ===')",

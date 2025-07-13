@@ -40,7 +40,6 @@ def execute_instruction(instruction: dict) -> str:
         if not mm.global_net:
             return "❌ 当前没有拓扑 (请先创建拓扑或检查global_net引用)"
 
-        # ✅ 双保险：先取 extra 里的，没有再取外层的
         src_name = instruction.get("extra", {}).get("source") or instruction.get("source")
         target_ip = instruction.get("extra", {}).get("target") or instruction.get("target")
         target_host = instruction.get("extra", {}).get("target_host") or instruction.get("target")
@@ -49,15 +48,50 @@ def execute_instruction(instruction: dict) -> str:
             return "❌ 指令缺少 source 或 target"
 
         src_host = mm.global_net.get(src_name)
-
         if not src_host:
             return f"❌ 主机 {src_name} 不存在"
 
-        # 此处使用 IP 执行 ping，而不是主机名
-        result = src_host.cmd(f"ping -c 3 {target_ip}")
-        success = "3 received" in result
+        print(f"[PING] 第一次尝试: {src_name} -> {target_ip}")
+        result1 = src_host.cmd(f"ping -c 3 -W 1 {target_ip}")
+        success1 = "3 received" in result1 or "2 received" in result1 or "1 received" in result1
 
-        return f"{src_name} {'可以✅' if success else '无法❌'} ping 通 {target_host or target_ip}"
+        if success1:
+            return f"{src_name} 可以✅ ping 通 {target_host or target_ip}"
+        
+        # 等待控制器可能下发的流表
+        print(f"[PING] 第一次失败，等待 5 秒后重试...")
+        import time
+        time.sleep(5)
+
+        print(f"[PING] 第二次尝试: {src_name} -> {target_ip}")
+        result2 = src_host.cmd(f"ping -c 3 -W 1 {target_ip}")
+        success2 = "3 received" in result2 or "2 received" in result2 or "1 received" in result2
+
+        return f"{src_name} {'可以✅' if success2 else '无法❌'} ping 通 {target_host or target_ip}"
+
+    # elif action == "ping_test":
+    #     print(f"[DEBUG] global_net状态: {mm.global_net}")
+    #     if not mm.global_net:
+    #         return "❌ 当前没有拓扑 (请先创建拓扑或检查global_net引用)"
+
+    #     # ✅ 双保险：先取 extra 里的，没有再取外层的
+    #     src_name = instruction.get("extra", {}).get("source") or instruction.get("source")
+    #     target_ip = instruction.get("extra", {}).get("target") or instruction.get("target")
+    #     target_host = instruction.get("extra", {}).get("target_host") or instruction.get("target")
+
+    #     if not src_name or not target_ip:
+    #         return "❌ 指令缺少 source 或 target"
+
+    #     src_host = mm.global_net.get(src_name)
+
+    #     if not src_host:
+    #         return f"❌ 主机 {src_name} 不存在"
+
+    #     # 此处使用 IP 执行 ping，而不是主机名
+    #     result = src_host.cmd(f"ping -c 3 {target_ip}")
+    #     success = "3 received" in result
+
+    #     return f"{src_name} {'可以✅' if success else '无法❌'} ping 通 {target_host or target_ip}"
 
     elif action == "delete_flowtable":
         switches = instruction.get("switches", [])
