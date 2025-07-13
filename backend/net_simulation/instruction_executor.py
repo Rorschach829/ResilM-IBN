@@ -4,7 +4,9 @@ from backend.net_simulation.ryu_controller import send_flow_mod
 import requests
 from backend.utils.ryu_utils import get_all_switch_ids
 from backend.utils.utils import convert_switch_name_to_dpid
+from ryu_app.auto_generate_path_intents import build_and_send_all_path_intents
 import time
+import re
 def convert_switch_name_to_dpid(name: str) -> int:
     """
     将交换机名（如 's1'）转换为对应的 dpid（数字）
@@ -19,6 +21,23 @@ def execute_instruction(instruction: dict) -> str:
     if action == "create_topology":
         result = mm.rebuild_topology(instruction)
         print(f"[DEBUG] 拓扑创建结果: {result}")
+
+        net = mm.global_net
+
+        if net:
+            from backend.utils.topology_utils import trigger_controller_learn_hosts
+            try:
+                trigger_controller_learn_hosts(net)
+            except Exception as e:
+                print(f"[WARN] trigger_controller_learn_hosts 执行失败: {e}")
+
+            expected_hosts = len(net.hosts)
+            if wait_for_all_hosts(expected=expected_hosts, timeout=15):
+                build_and_send_all_path_intents(net)
+                print("[INTENT] 路径流表下发完成 ✅")
+            else:
+                print(f"[INTENT] ❌ 等待超时，期望注册 {expected_hosts} 台主机，实际不足")
+
         return result
 
     elif action == "install_flowtable":
@@ -51,47 +70,26 @@ def execute_instruction(instruction: dict) -> str:
         if not src_host:
             return f"❌ 主机 {src_name} 不存在"
 
+        # 发送3个包，有一个包收到了就说明Ping通了
         print(f"[PING] 第一次尝试: {src_name} -> {target_ip}")
         result1 = src_host.cmd(f"ping -c 3 -W 1 {target_ip}")
-        success1 = "3 received" in result1 or "2 received" in result1 or "1 received" in result1
+        match1 = re.search(r"(\d+) packets transmitted, (\d+) received", result1)
+        success1 = match1 and int(match1.group(2)) >= 1
 
         if success1:
-            return f"{src_name} 可以✅ ping 通 {target_host or target_ip}"
-        
-        # 等待控制器可能下发的流表
+            return f"{src_name} 可以✅ ping 通 {target_host or target_ip}\n{result1}"
+
+        # 等待5秒控制器可能下发流表
         print(f"[PING] 第一次失败，等待 5 秒后重试...")
-        import time
         time.sleep(5)
 
         print(f"[PING] 第二次尝试: {src_name} -> {target_ip}")
         result2 = src_host.cmd(f"ping -c 3 -W 1 {target_ip}")
-        success2 = "3 received" in result2 or "2 received" in result2 or "1 received" in result2
+        match2 = re.search(r"(\d+) packets transmitted, (\d+) received", result2)
+        success2 = match2 and int(match2.group(2)) >= 1
 
-        return f"{src_name} {'可以✅' if success2 else '无法❌'} ping 通 {target_host or target_ip}"
+        return f"{src_name} {'可以✅' if success2 else '无法❌'} ping 通 {target_host or target_ip}\n{result2}"
 
-    # elif action == "ping_test":
-    #     print(f"[DEBUG] global_net状态: {mm.global_net}")
-    #     if not mm.global_net:
-    #         return "❌ 当前没有拓扑 (请先创建拓扑或检查global_net引用)"
-
-    #     # ✅ 双保险：先取 extra 里的，没有再取外层的
-    #     src_name = instruction.get("extra", {}).get("source") or instruction.get("source")
-    #     target_ip = instruction.get("extra", {}).get("target") or instruction.get("target")
-    #     target_host = instruction.get("extra", {}).get("target_host") or instruction.get("target")
-
-    #     if not src_name or not target_ip:
-    #         return "❌ 指令缺少 source 或 target"
-
-    #     src_host = mm.global_net.get(src_name)
-
-    #     if not src_host:
-    #         return f"❌ 主机 {src_name} 不存在"
-
-    #     # 此处使用 IP 执行 ping，而不是主机名
-    #     result = src_host.cmd(f"ping -c 3 {target_ip}")
-    #     success = "3 received" in result
-
-    #     return f"{src_name} {'可以✅' if success else '无法❌'} ping 通 {target_host or target_ip}"
 
     elif action == "delete_flowtable":
         switches = instruction.get("switches", [])
@@ -235,3 +233,20 @@ def execute_instruction(instruction: dict) -> str:
 
     else:
         return f"❌ 未识别的指令类型: {action}"
+
+def wait_for_all_hosts(expected=9, timeout=10):
+    import requests
+    import time
+
+    for _ in range(timeout):
+        try:
+            resp = requests.get("http://localhost:8081/intent/valid_hosts")
+            if resp.status_code == 200:
+                hosts = resp.json()
+                print(f"[等待主机] 当前已注册 {len(hosts)} 个主机: {hosts}")
+                if len(hosts) >= expected:
+                    return True
+        except Exception as e:
+            print(f"[等待主机] 请求失败: {e}")
+        time.sleep(1)
+    return False

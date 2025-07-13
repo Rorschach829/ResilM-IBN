@@ -8,3 +8,5 @@ def get_all_switch_ids():
     except Exception as e:
         print("[ERROR] 获取交换机列表失败:", e)
     return []
+
+

@@ -253,21 +253,21 @@
       });
     }
 
-    async function fetchTokenUsage() {
-      try {
-        const res = await fetch(serverUrl + "/token_stats");
-        const data = await res.json();
-        document.getElementById("tokenCount").innerText = data.total_tokens || 0;
-      } catch (err) {
-        console.error("Token 获取失败", err);
-      }
-    }
+    // async function fetchTokenUsage() {
+    //   try {
+    //     const res = await fetch(serverUrl + "/token_stats");
+    //     const data = await res.json();
+    //     document.getElementById("tokenCount").innerText = data.total_tokens || 0;
+    //   } catch (err) {
+    //     console.error("Token 获取失败", err);
+    //   }
+    // }
 
-    // 每 5 秒刷新一次 token 数
-    setInterval(fetchTokenUsage, 5000);
+    // // 每 5 秒刷新一次 token 数
+    // setInterval(fetchTokenUsage, 5000000);
 
-    // 页面首次加载时立即获取一次
-    fetchTokenUsage();
+    // // 页面首次加载时立即获取一次
+    // fetchTokenUsage();
 
     loadTopology();
   </script>

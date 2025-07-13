@@ -4,6 +4,8 @@ from mininet.clean import cleanup
 from backend.agents.intent_agent import IntentAgent
 from backend.utils.utils import is_cyclic_topology
 from backend.utils.arp_utils import configure_static_arp
+from backend.utils.topology_utils import trigger_controller_learn_hosts
+import time
 global_net = None  # 全局保存net实例
 
 def run_mininet_code(code: str) -> str:
@@ -62,10 +64,14 @@ def get_current_topology():
 
     return {"nodes": nodes, "links": links}
 
+
 def rebuild_topology(intent_json: dict) -> str:
     global global_net
 
-    # 先判断是否为环路拓扑
+# 清空残留流表
+    print("[清理流表] 正在清空所有交换机流表...")
+    clear_all_flow_tables()
+
     enable_stp = is_cyclic_topology(intent_json.get("links", []))
     print(f"[INFO] 当前拓扑是否为环路结构: {enable_stp}")
 
@@ -76,22 +82,29 @@ def rebuild_topology(intent_json: dict) -> str:
         except Exception as e:
             print(f"销毁旧拓扑失败: {e}")
 
-    # ✅ 传入 STP 控制参数
     code = build_mininet_code_from_json(intent_json, enable_stp=enable_stp)
 
     exec_globals = {}
     try:
         exec(code, exec_globals)
 
-        # 手动调用静态 ARP 配置（在 exec 后）
+        net = exec_globals.get("net")
         hosts_info = exec_globals.get("hosts_info")
+
+        if not net:
+            raise Exception("生成的代码中未创建 net 实例")
+
+        net.start()  # ✅ 还是要加这个
+
         if hosts_info:
             configure_static_arp(hosts_info)
+            print(f"[ARP] 已为 {len(hosts_info)} 个主机配置静态 ARP 条目")
 
-        global_net = exec_globals.get("net")
-        if not global_net:
-            raise Exception("生成的代码中未创建 net 实例")
+        global_net = net
+        # 执行一次pingall
+        trigger_controller_learn_hosts(global_net)
         return "✅ 拓扑创建成功"
+
     except Exception as e:
         global_net = None
         return f"❌ 拓扑创建失败: {str(e)}"
@@ -161,6 +174,7 @@ def build_mininet_code_from_json(data: dict, enable_stp: bool = True) -> str:
     lines.append("")
     lines.append("# 动态添加链路")
     for link in links:
+        print("📌 实际Link:", link)
         lines.append(f"net.addLink({link['src']}, {link['dst']})")
 
     lines += [
@@ -228,7 +242,12 @@ def build_mininet_code_from_json(data: dict, enable_stp: bool = True) -> str:
         "    configure_static_arp(hosts_info)",
         "",
         "add_arp_entries()",
-        "",
+        # "# 手动pingall ",
+        "# 查看每台主机的 ARP 表",
+        "print('\\n=== 每台主机 ARP 表 ===')",
+        "for h in net.hosts:",
+        "    print(f'[{h.name}] ARP 表:')",
+        "    print(h.cmd('arp -n'))",
         "",
         "",
         "# 提供进入CLI的选项",
@@ -240,3 +259,19 @@ def build_mininet_code_from_json(data: dict, enable_stp: bool = True) -> str:
     ]
 
     return "\n".join(lines)
+
+
+
+from ryu.lib import dpid as dpid_lib
+import requests
+
+def clear_all_flow_tables():
+    for dpid in range(1, 256):  # 假设最多 255 个交换机
+        url = f"http://localhost:8081/stats/flowentry/clear/{dpid}"
+        try:
+            resp = requests.delete(url)
+            if resp.status_code == 200:
+                print(f"[清理流表] ✅ dpid={dpid} 流表已清空")
+        except Exception as e:
+            # 控制台可以不输出错误，避免误报
+            pass
