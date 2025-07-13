@@ -2,7 +2,8 @@ import tempfile
 import traceback
 from mininet.clean import cleanup
 from backend.agents.intent_agent import IntentAgent
-
+from backend.utils.utils import is_cyclic_topology
+from backend.utils.arp_utils import configure_static_arp
 global_net = None  # 全局保存net实例
 
 def run_mininet_code(code: str) -> str:
@@ -61,13 +62,13 @@ def get_current_topology():
 
     return {"nodes": nodes, "links": links}
 
-
 def rebuild_topology(intent_json: dict) -> str:
     global global_net
 
-    # cleanup()
+    # 先判断是否为环路拓扑
+    enable_stp = is_cyclic_topology(intent_json.get("links", []))
+    print(f"[INFO] 当前拓扑是否为环路结构: {enable_stp}")
 
-    # 若已有拓扑，先销毁
     if global_net:
         try:
             global_net.stop()
@@ -75,11 +76,18 @@ def rebuild_topology(intent_json: dict) -> str:
         except Exception as e:
             print(f"销毁旧拓扑失败: {e}")
 
-    code = build_mininet_code_from_json(intent_json)
+    # ✅ 传入 STP 控制参数
+    code = build_mininet_code_from_json(intent_json, enable_stp=enable_stp)
 
     exec_globals = {}
     try:
         exec(code, exec_globals)
+
+        # 手动调用静态 ARP 配置（在 exec 后）
+        hosts_info = exec_globals.get("hosts_info")
+        if hosts_info:
+            configure_static_arp(hosts_info)
+
         global_net = exec_globals.get("net")
         if not global_net:
             raise Exception("生成的代码中未创建 net 实例")
@@ -87,6 +95,35 @@ def rebuild_topology(intent_json: dict) -> str:
     except Exception as e:
         global_net = None
         return f"❌ 拓扑创建失败: {str(e)}"
+
+
+
+# 原版
+# def rebuild_topology(intent_json: dict) -> str:
+#     global global_net
+
+#     # cleanup()
+
+#     # 若已有拓扑，先销毁
+#     if global_net:
+#         try:
+#             global_net.stop()
+#             global_net = None
+#         except Exception as e:
+#             print(f"销毁旧拓扑失败: {e}")
+
+#     code = build_mininet_code_from_json(intent_json)
+
+#     exec_globals = {}
+#     try:
+#         exec(code, exec_globals)
+#         global_net = exec_globals.get("net")
+#         if not global_net:
+#             raise Exception("生成的代码中未创建 net 实例")
+#         return "✅ 拓扑创建成功"
+#     except Exception as e:
+#         global_net = None
+#         return f"❌ 拓扑创建失败: {str(e)}"
 
 def stop_topology() -> str:
     global global_net
@@ -100,7 +137,7 @@ def stop_topology() -> str:
     except Exception as e:
         return f"停止拓扑失败: {str(e)}"
 
-def build_mininet_code_from_json(data: dict) -> str:
+def build_mininet_code_from_json(data: dict, enable_stp: bool = True) -> str:
     hosts = data.get("hosts", [])
     switches = data.get("switches", [])
     links = data.get("links", [])
@@ -177,41 +214,39 @@ def build_mininet_code_from_json(data: dict) -> str:
         "for link in net.links:",
         "    print(f'{link.intf1.node.name}({link.intf1.name}) <-> {link.intf2.node.name}({link.intf2.name})')",
         "",
-        "# 智能等待STP收敛",
-        "print('\\n=== 等待STP收敛，请稍候... ===')",
-        "def wait_for_stp_convergence():",
-        "    max_wait = 35  # 最大等待35秒",
-        "    check_interval = 5  # 每5秒检查一次",
-        "    waited = 0",
-        "    ",
-        "    while waited < max_wait:",
-        "        print(f'检查STP状态... (已等待{waited}秒)')",
-        "        try:",
-        "            # 动态检查所有交换机的流表",
-        "            has_flows = False",
-        "            for switch_name, info in switches_info.items():",
-        "                response = requests.get(f'http://localhost:8081/stats/flow/{info[\"dpid\"]}', timeout=3)",
-        "                if response.status_code == 200:",
-        "                    flows = response.json()",
-        "                    if len(flows.get(str(info['dpid']), [])) > 0:",
-        "                        has_flows = True",
-        "                        break",
-        "            ",
-        "            if has_flows:",
-        "                print(f'检测到流表条目，STP可能已收敛 (等待了{waited}秒)')",
-        "                time.sleep(5)  # 再等5秒确保稳定",
-        "                return waited + 5",
-        "        except:",
-        "            pass",
-        "        ",
-        "        time.sleep(check_interval)",
-        "        waited += check_interval",
-        "    ",
-        "    print(f'达到最大等待时间{max_wait}秒')",
-        "    return max_wait",
+
+        f"if {str(enable_stp)}:",
+        "    print('\\n=== 等待STP收敛，请稍候... ===')",
+        "    def wait_for_stp_convergence():",
+        "        max_wait = 35",
+        "        check_interval = 5",
+        "        waited = 0",
+        "        while waited < max_wait:",
+        "            print(f'检查STP状态... (已等待{waited}秒)')",
+        "            try:",
+        "                has_flows = False",
+        "                for switch_name, info in switches_info.items():",
+        "                    response = requests.get(f'http://localhost:8081/stats/flow/{info[\"dpid\"]}', timeout=3)",
+        "                    if response.status_code == 200:",
+        "                        flows = response.json()",
+        "                        if len(flows.get(str(info['dpid']), [])) > 0:",
+        "                            has_flows = True",
+        "                            break",
+        "                if has_flows:",
+        "                    print(f'检测到流表条目，STP可能已收敛 (等待了{waited}秒)')",
+        "                    time.sleep(5)",
+        "                    return waited + 5",
+        "            except:",
+        "                pass",
+        "            time.sleep(check_interval)",
+        "            waited += check_interval",
+        "        print(f'达到最大等待时间{max_wait}秒')",
+        "        return max_wait",
         "",
-        "actual_wait = wait_for_stp_convergence()",
-        "print(f'STP收敛等待完成！(实际等待: {actual_wait}秒)')",
+        "    actual_wait = wait_for_stp_convergence()",
+        "    print(f'STP收敛等待完成！(实际等待: {actual_wait}秒)')",
+        "else:",
+        "    print('\\n[优化] 拓扑无环，跳过 STP 收敛等待')",
         "",
         "# 动态检查STP状态",
         "def check_stp_status():",
@@ -241,17 +276,20 @@ def build_mininet_code_from_json(data: dict) -> str:
         "print('\\n=== 动态添加ARP条目 ===')",
         "def add_arp_entries():",
         "    # 为所有主机对添加ARP条目",
-        "    host_list = list(hosts_info.keys())",
-        "    for i, host1_name in enumerate(host_list):",
-        "        for host2_name in host_list[i+1:]:",
-        "            host1 = hosts_info[host1_name]['node']",
-        "            host2 = hosts_info[host2_name]['node']",
-        "            ",
-        "            # 互相添加ARP条目",
-        "            host1.cmd(f'arp -s {host2.IP()} {host2.MAC()}')",
-        "            host2.cmd(f'arp -s {host1.IP()} {host1.MAC()}')",
+        "    from backend.utils.arp_utils import configure_static_arp",
+        "    configure_static_arp(hosts_info)",
+
+        # "    host_list = list(hosts_info.keys())",
+        # "    for i, host1_name in enumerate(host_list):",
+        # "        for host2_name in host_list[i+1:]:",
+        # "            host1 = hosts_info[host1_name]['node']",
+        # "            host2 = hosts_info[host2_name]['node']",
+        # "            ",
+        # "            # 互相添加ARP条目",
+        # "            host1.cmd(f'arp -s {host2.IP()} {host2.MAC()}')",
+        # "            host2.cmd(f'arp -s {host1.IP()} {host1.MAC()}')",
         "    ",
-        "    print(f'已为{len(host_list)}个主机添加ARP条目')",
+        # "    print(f'已为{len(host_list)}个主机添加ARP条目')",
         "",
         "add_arp_entries()",
         "",
