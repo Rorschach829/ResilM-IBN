@@ -22,6 +22,10 @@ def execute_instruction(instruction: dict) -> str:
     action = instruction.get("action")
 
     if action == "create_topology":
+
+        # ✅ 清空 controller 注册状态，防止重复注册主机
+        from backend.controller import controller_instance
+        controller = controller_instance.get_controller_instance()
         result = mm.rebuild_topology(instruction)
 
         net_bridge.global_net = mm.global_net
@@ -177,10 +181,6 @@ def execute_instruction(instruction: dict) -> str:
             ryu_controller.mininet_net = net_bridge.global_net
             print("[DEBUG] 已注入 global_net 到 Ryu 控制器:", id(net_bridge.global_net))
         try:
-
-            
-
-
             resp = requests.post(
                 "http://localhost:8081/intent/link_down",
                 json={"link": instruction.get("link", [])},

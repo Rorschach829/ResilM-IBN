@@ -102,6 +102,23 @@ class PathIntentController(app_manager.RyuApp):
             self.logger.debug(f"[过滤] 忽略非法源 MAC: {src_mac}")
             return
 
+        # === 只处理 ARP 或 IPv4 包，且 IP 必须在合法网段 ===
+        from ryu.lib.packet import arp, ipv4
+        arp_pkt = pkt.get_protocol(arp.arp)
+        ipv4_pkt = pkt.get_protocol(ipv4.ipv4)
+
+        if arp_pkt:
+            src_ip = arp_pkt.src_ip
+        elif ipv4_pkt:
+            src_ip = ipv4_pkt.src
+        else:
+            self.logger.debug(f"[过滤] 非 ARP/IP 包，跳过主机注册: {src_mac}")
+            return
+
+        if not src_ip.startswith("10.0.0."):
+            self.logger.debug(f"[过滤] 非法主机 IP ({src_ip})，跳过注册: {src_mac}")
+            return
+
         # 已注册则检查是否重复注册
         if src_mac in self.hosts:
             old_dpid, old_port, _ = self.hosts[src_mac]
@@ -117,17 +134,11 @@ class PathIntentController(app_manager.RyuApp):
             return
 
         # 注册主机
-        self.logger.info(f"✅ 注册新主机: {src_mac} (dpid={dpid}, port={in_port})")
+        self.logger.info(f"✅ 注册新主机: {src_mac} (dpid={dpid}, port={in_port}, ip={src_ip})")
         self.hosts[src_mac] = (dpid, in_port, src_mac)
 
-
-
-        # if src not in self.hosts:
-        #     self.logger.info(f"注册新主机: {src} (dpid={dpid}, port={in_port})")
-        #     self.hosts[src] = (dpid, in_port, src)
-
         # flooding only for ARP
-        if pkt.get_protocol(arp.arp):
+        if arp_pkt:
             out = parser.OFPPacketOut(
                 datapath=datapath,
                 buffer_id=ofproto.OFP_NO_BUFFER,
@@ -137,6 +148,7 @@ class PathIntentController(app_manager.RyuApp):
             )
             datapath.send_msg(out)
             return
+
 
     @set_ev_cls(event.EventLinkAdd)
     def update_links(self, ev):
