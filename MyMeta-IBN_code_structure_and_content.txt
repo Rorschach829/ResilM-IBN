@@ -2,6 +2,7 @@
 
 Meta-IBN/
     MyMeta-IBN_code_structure_and_content.txt
+    start_all.py
     backend/
         __init__.py
         main.py
@@ -42,6 +43,77 @@ Meta-IBN/
 ### 文件内容 ###
 
 # 文件路径: ./MyMeta-IBN_code_structure_and_content.txt
+
+
+# 文件路径: ./start_all.py
+# start_all.py
+import threading
+import logging
+import os
+import sys
+from ryu import cfg
+from ryu.base import app_manager
+from ryu.controller.controller import Datapath
+from ryu.app import wsgi
+
+# ✅ 加载你的 Ryu 控制器和 API 控制模块
+import backend.controller.PathIntentController  # 注册 controller
+import backend.controller.ryu_topology_rest    # REST API for topology
+import ryu.app.ofctl_rest
+import ryu.app.rest_topology
+import ryu.topology.switches
+
+# ✅ Flask App 导入
+from backend.api.app import app as flask_app
+
+
+# ✅ 设置 Ryu 日志写入文件（避免和 Flask 冲突）
+def setup_ryu_logging():
+    log_path = "/data/gjw/logs/ryu.log"
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    logger = logging.getLogger("RYU")
+    handler = logging.FileHandler(log_path, mode='w', encoding='utf-8')
+    formatter = logging.Formatter("[%(asctime)s][%(levelname)s] %(message)s")
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
+    return logger
+
+
+def start_ryu():
+    CONF = cfg.CONF
+    CONF(args=[
+        '--observe-links',
+        '--ofp-tcp-listen-port', '6633',
+        '--wsapi-port', '8081'
+    ])
+
+    logger = setup_ryu_logging()
+    logger.info("✅ 正在启动 Ryu 控制器...")
+
+    app_mgr = app_manager.AppManager.get_instance()
+    app_mgr.run_apps([
+        'ryu.app.ofctl_rest',
+        'ryu.app.rest_topology',
+        'ryu.topology.switches',
+        'backend.controller.PathIntentController',
+        'backend.controller.ryu_topology_rest'
+    ])
+
+
+def start_flask():
+    # Flask 输出到控制台即可
+    print("✅ 正在启动 Flask Web API at http://localhost:5000")
+    flask_app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
+
+
+if __name__ == '__main__':
+    # ✅ 启动 Ryu（在子线程中）
+    t1 = threading.Thread(target=start_ryu, daemon=True)
+    t1.start()
+
+    # ✅ 启动 Flask（主线程）
+    start_flask()
 
 
 # 文件路径: ./backend/__init__.py
@@ -150,6 +222,10 @@ def execute_instruction(instruction: dict) -> str:
     action = instruction.get("action")
 
     if action == "create_topology":
+
+        # ✅ 清空 controller 注册状态，防止重复注册主机
+        from backend.controller import controller_instance
+        controller = controller_instance.get_controller_instance()
         result = mm.rebuild_topology(instruction)
 
         net_bridge.global_net = mm.global_net
@@ -305,10 +381,6 @@ def execute_instruction(instruction: dict) -> str:
             ryu_controller.mininet_net = net_bridge.global_net
             print("[DEBUG] 已注入 global_net 到 Ryu 控制器:", id(net_bridge.global_net))
         try:
-
-            
-
-
             resp = requests.post(
                 "http://localhost:8081/intent/link_down",
                 json={"link": instruction.get("link", [])},
@@ -837,6 +909,23 @@ class PathIntentController(app_manager.RyuApp):
             self.logger.debug(f"[过滤] 忽略非法源 MAC: {src_mac}")
             return
 
+        # === 只处理 ARP 或 IPv4 包，且 IP 必须在合法网段 ===
+        from ryu.lib.packet import arp, ipv4
+        arp_pkt = pkt.get_protocol(arp.arp)
+        ipv4_pkt = pkt.get_protocol(ipv4.ipv4)
+
+        if arp_pkt:
+            src_ip = arp_pkt.src_ip
+        elif ipv4_pkt:
+            src_ip = ipv4_pkt.src
+        else:
+            self.logger.debug(f"[过滤] 非 ARP/IP 包，跳过主机注册: {src_mac}")
+            return
+
+        if not src_ip.startswith("10.0.0."):
+            self.logger.debug(f"[过滤] 非法主机 IP ({src_ip})，跳过注册: {src_mac}")
+            return
+
         # 已注册则检查是否重复注册
         if src_mac in self.hosts:
             old_dpid, old_port, _ = self.hosts[src_mac]
@@ -852,17 +941,11 @@ class PathIntentController(app_manager.RyuApp):
             return
 
         # 注册主机
-        self.logger.info(f"✅ 注册新主机: {src_mac} (dpid={dpid}, port={in_port})")
+        self.logger.info(f"✅ 注册新主机: {src_mac} (dpid={dpid}, port={in_port}, ip={src_ip})")
         self.hosts[src_mac] = (dpid, in_port, src_mac)
 
-
-
-        # if src not in self.hosts:
-        #     self.logger.info(f"注册新主机: {src} (dpid={dpid}, port={in_port})")
-        #     self.hosts[src] = (dpid, in_port, src)
-
         # flooding only for ARP
-        if pkt.get_protocol(arp.arp):
+        if arp_pkt:
             out = parser.OFPPacketOut(
                 datapath=datapath,
                 buffer_id=ofproto.OFP_NO_BUFFER,
@@ -872,6 +955,7 @@ class PathIntentController(app_manager.RyuApp):
             )
             datapath.send_msg(out)
             return
+
 
     @set_ev_cls(event.EventLinkAdd)
     def update_links(self, ev):

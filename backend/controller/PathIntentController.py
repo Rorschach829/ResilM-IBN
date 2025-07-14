@@ -38,6 +38,7 @@ class PathIntentController(app_manager.RyuApp):
     }
     _NAME = "PathIntentController"  # ✅ 命名用于 lookup
 
+    # 初始化，维护主机表、拓扑图、交换机数据、Mininet句柄等
     def __init__(self, *args, **kwargs):
         super(PathIntentController, self).__init__(*args, **kwargs)
         wsgi = kwargs['wsgi']
@@ -52,7 +53,7 @@ class PathIntentController(app_manager.RyuApp):
         self.logger.info("[DEBUG] PathIntentController 初始化成功")
         self.logger.info(f"当前控制器注册名: {self.name}")
 
-
+        # 安装默认流表
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
         datapath = ev.msg.datapath
@@ -75,7 +76,7 @@ class PathIntentController(app_manager.RyuApp):
         datapath.send_msg(mod)
         self.logger.info(f"🚀 add_flow called on dpid={datapath.id}, match={match}, actions={actions}")
 
-
+        # 主机自动注册/学习
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
         msg = ev.msg
@@ -149,7 +150,7 @@ class PathIntentController(app_manager.RyuApp):
             datapath.send_msg(out)
             return
 
-
+        # 监听新链路，更新拓扑
     @set_ev_cls(event.EventLinkAdd)
     def update_links(self, ev):
         link = ev.link
@@ -179,7 +180,7 @@ class PathIntentController(app_manager.RyuApp):
         self.logger.info(f"当前 NetworkX 图的边: {list(self.net.edges)}")
 
 
-
+         # 计算最短路径并批量下发流表（双向）
     def install_path_between_hosts(self, src_host: str, dst_host: str):
 
                 # 检查路径图中是否存在未注册的 DPID
@@ -275,7 +276,7 @@ class PathIntentController(app_manager.RyuApp):
                 return dp
         raise Exception(f"找不到对应的 datapath: {dpid}")
 
-
+        # 交换机上线/下线的状态维护与清理
     @set_ev_cls(ofp_event.EventOFPStateChange, [MAIN_DISPATCHER, DEAD_DISPATCHER])
     def state_change_handler(self, ev):
         dp = ev.datapath
@@ -305,8 +306,7 @@ class PathIntentController(app_manager.RyuApp):
 
                 self.logger.info(f"✅ 状态清除完成: DPID={dpid}")    
     
-    # backend/controller/path_intent_controller.py
-
+        # 断开链路，NetworkX图和Mininet同步
     def link_down(self, src_switch: str, dst_switch: str):
         self.logger.info("以下消息由link_down方法输出")
         self.logger.debug(f"当前 NetworkX 图边数量: {self.net.number_of_edges()}")
@@ -406,7 +406,3 @@ class IntentWebController(ControllerBase):
             print("[DEBUG] 链路断开失败堆栈:")
             traceback.print_exc()
             return Response(status=500, body=f"❌ 执行失败: {e}")
-
-
-
-
