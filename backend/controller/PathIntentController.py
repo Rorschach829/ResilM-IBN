@@ -10,13 +10,33 @@ from ryu.controller import dpset
 from webob import Response
 import networkx as nx
 import json
+import traceback
+import select 
+
+print("[DEBUG] select.poll:", hasattr(select, "poll"))
+
+import ryu.lib.hub as hub
+print("[DEBUG] 当前 hub 使用:", hub.__file__)
+
+
+# 修复 eventlet/gevent 等污染的 select 模块
+import sys
+import importlib
+if "select" in sys.modules:
+    del sys.modules["select"]
+ # 强制导入标准库
 
 # 全局变量传给 REST 控制器
 intent_instance_name = 'intent_api_app'
 
 class PathIntentController(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
-    _CONTEXTS = { 'wsgi': WSGIApplication }
+    # _CONTEXTS = { 'wsgi': WSGIApplication }
+    _CONTEXTS = {
+        'wsgi': WSGIApplication,
+        'dpset': dpset.DPSet
+    }
+    _NAME = "PathIntentController"  # ✅ 命名用于 lookup
 
     def __init__(self, *args, **kwargs):
         super(PathIntentController, self).__init__(*args, **kwargs)
@@ -25,10 +45,13 @@ class PathIntentController(app_manager.RyuApp):
         self.hosts = {}  # IP -> (DPID, Port, MAC)
         self.net = nx.DiGraph()
         self.dpset = kwargs['dpset']
-
+        self.mininet_net = None
         self.datapaths = {} # ✅ 用于记录连接的交换机 datapath
 
         wsgi.register(IntentWebController, {intent_instance_name: self})
+        self.logger.info("[DEBUG] PathIntentController 初始化成功")
+        self.logger.info(f"当前控制器注册名: {self.name}")
+
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
@@ -118,30 +141,31 @@ class PathIntentController(app_manager.RyuApp):
     @set_ev_cls(event.EventLinkAdd)
     def update_links(self, ev):
         link = ev.link
-        src = link.src
-        dst = link.dst
+        src = f"s{link.src.dpid}"
+        dst = f"s{link.dst.dpid}"
 
-        self.net.add_edge(src.dpid, dst.dpid, port=src.port_no)
-        self.net.add_edge(dst.dpid, src.dpid, port=dst.port_no)
+        self.net.add_edge(src, dst, port=link.src.port_no)
+        self.net.add_edge(dst, src, port=link.dst.port_no)
 
-        self.logger.info(f"✅ update_links链路已添加: {src.dpid} <--> {dst.dpid}")
-        self.logger.info(f"✅ update links当前 NetworkX 图的边: {self.net.edges(data=True)}")
+        self.logger.info(f"✅ 链路已添加: {src} <--> {dst}")
+        self.logger.info(f"✅ 当前 NetworkX 图的边: {self.net.edges(data=True)}")
+
+
     @set_ev_cls(event.EventSwitchEnter)
     def get_topology_data(self, ev):
         switch_list = get_switch(self, None)
-        self.net.add_nodes_from([sw.dp.id for sw in switch_list])
+        self.net.add_nodes_from([f"s{sw.dp.id}" for sw in switch_list])
 
         link_list = get_link(self, None)
         for link in link_list:
-            src = link.src.dpid
-            dst = link.dst.dpid
-            self.logger.info(f"Link: {src} -> {dst}")
+            src = f"s{link.src.dpid}"
+            dst = f"s{link.dst.dpid}"
             self.net.add_edge(src, dst, port=link.src.port_no)
             self.net.add_edge(dst, src, port=link.dst.port_no)
 
-        # 新增打印
         self.logger.info(f"当前 NetworkX 图的节点: {list(self.net.nodes)}")
         self.logger.info(f"当前 NetworkX 图的边: {list(self.net.edges)}")
+
 
 
     def install_path_between_hosts(self, src_host: str, dst_host: str):
@@ -169,8 +193,14 @@ class PathIntentController(app_manager.RyuApp):
         if src_mac not in self.hosts or dst_mac not in self.hosts:
             raise Exception("源或目标主机未注册")
 
-        src_dpid, src_port, _ = self.hosts[src_mac]
-        dst_dpid, dst_port, _ = self.hosts[dst_mac]
+        # src_dpid, src_port, _ = self.hosts[src_mac]
+        # dst_dpid, dst_port, _ = self.hosts[dst_mac]
+        src_dpid_num, src_port, _ = self.hosts[src_mac]
+        dst_dpid_num, dst_port, _ = self.hosts[dst_mac]
+
+        src_dpid = f"s{src_dpid_num}"
+        dst_dpid = f"s{dst_dpid_num}"
+
 
         self.logger.info(f"✅ 当前 NetworkX 图的节点: {self.net.nodes()}")
         self.logger.info(f"✅ 当前 NetworkX 图的边: {self.net.edges(data=True)}")
@@ -223,10 +253,16 @@ class PathIntentController(app_manager.RyuApp):
 
 
     def get_datapath(self, dpid):
+        if isinstance(dpid, str) and dpid.startswith("s"):
+            dpid_num = int(dpid[1:])
+        else:
+            dpid_num = int(dpid)
+
         for dp_id, dp in self.dpset.get_all():
-            if dp.id == dpid:
+            if dp.id == dpid_num:
                 return dp
-        raise Exception(f"找不到对应的datapath: {dpid}")
+        raise Exception(f"找不到对应的 datapath: {dpid}")
+
 
     @set_ev_cls(ofp_event.EventOFPStateChange, [MAIN_DISPATCHER, DEAD_DISPATCHER])
     def state_change_handler(self, ev):
@@ -234,11 +270,65 @@ class PathIntentController(app_manager.RyuApp):
         if ev.state == MAIN_DISPATCHER:
             if dp.id not in self.datapaths:
                 self.logger.info(f"✅ 新交换机上线: DPID={dp.id}")
-            self.datapaths[dp.id] = dp
+            # self.datapaths[dp.id] = dp
+            self.datapaths[f"s{dp.id}"] = dp
         elif ev.state == DEAD_DISPATCHER:
-            if dp.id in self.datapaths:
-                self.logger.info(f"❌ 交换机离线: DPID={dp.id}")
-                del self.datapaths[dp.id]
+            dpid = dp.id
+            if dpid in self.datapaths:
+                self.logger.warning(f"❌ 交换机离线: DPID={dpid}，正在清除相关状态...")
+
+                # 1. 删除 datapath 引用
+                del self.datapaths[dpid]
+
+                # 2. 清除主机列表中挂在该交换机下的主机
+                to_remove = [mac for mac, (d, _, _) in self.hosts.items() if d == dpid]
+                for mac in to_remove:
+                    del self.hosts[mac]
+                    self.logger.info(f"🧹 主机已移除: {mac} (原挂在 DPID={dpid})")
+
+                # 3. 清除 NetworkX 拓扑图中节点
+                if dpid in self.net:
+                    self.net.remove_node(dpid)
+                    self.logger.info(f"🧹 NetworkX 图中移除节点: DPID={dpid}")
+
+                self.logger.info(f"✅ 状态清除完成: DPID={dpid}")    
+    
+    # backend/controller/path_intent_controller.py
+
+    def link_down(self, src_switch: str, dst_switch: str):
+        self.logger.info("以下消息由link_down方法输出")
+        self.logger.debug(f"当前 NetworkX 图边数量: {self.net.number_of_edges()}")
+
+        mininet_net = self.mininet_net
+        print("[DEBUG] 使用注入的 mininet_net:", id(mininet_net))
+
+        try:
+            self.logger.info(f"🚧 准备断开链路: {src_switch} ↔ {dst_switch}")
+
+            # 1. 更新 NetworkX 拓扑图
+            if self.net.has_edge(src_switch, dst_switch):
+                self.net.remove_edge(src_switch, dst_switch)
+                self.logger.info(f"🧠 拓扑图中已删除边: {src_switch} ↔ {dst_switch}")
+            else:
+                self.logger.warning(f"⚠️ 拓扑图中未找到边: {src_switch} ↔ {dst_switch}")
+
+            # 2. 真正断开 Mininet 中链路
+            if mininet_net:
+                link = mininet_net.linksBetween(
+                    mininet_net.get(src_switch),
+                    mininet_net.get(dst_switch)
+                )
+                if link:
+                    link[0].intf1.ifconfig('down')
+                    link[0].intf2.ifconfig('down')
+                    self.logger.info(f"✅ Mininet 中链路已禁用: {src_switch} ↔ {dst_switch}")
+                else:
+                    self.logger.warning(f"⚠️ Mininet 中未找到链路: {src_switch} ↔ {dst_switch}")
+            else:
+                self.logger.warning("⚠️ Mininet 实例未创建，跳过实际断链")
+
+        except Exception as e:
+            self.logger.error(f"❌ 链路断开失败: {e}")
 
 
 class IntentWebController(ControllerBase):
@@ -282,4 +372,29 @@ class IntentWebController(ControllerBase):
         host_list = list(self.intent_app.hosts.keys())  # MAC 地址列表
         return Response(content_type='application/json',
                         body=json.dumps(host_list).encode('utf-8'))
+    
+    # 断开链路
+    @route('link_down', '/intent/link_down', methods=['POST'])
+    def link_down_api(self, req, **kwargs):
+        print("[DEBUG] ✅RYU收到 /intent/link_down 请求")
+
+        try:
+            print("[DEBUG] 开始处理 /intent/link_down 的api请求")
+            content = req.json if req.body else {}
+            src, dst = content.get("link", [None, None])
+            if not src or not dst:
+                return Response(status=400, body="参数错误")
+
+            # ❌ 删除旧代码：不要再导入 mm.global_net
+            # ✅ mininet_net 由 Flask 注入 controller，直接使用
+            self.intent_app.link_down(src, dst)
+            return Response(status=200, body=f"✅ 链路断开成功: {src} ↔ {dst}")
+
+        except Exception as e:
+            print("[DEBUG] 链路断开失败堆栈:")
+            traceback.print_exc()
+            return Response(status=500, body=f"❌ 执行失败: {e}")
+
+
+
 

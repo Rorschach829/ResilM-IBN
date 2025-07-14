@@ -7,6 +7,9 @@ from backend.utils.utils import convert_switch_name_to_dpid
 from ryu_app.auto_generate_path_intents import build_and_send_all_path_intents
 import time
 import re
+from backend.net_simulation import net_bridge
+# from backend.controller.controller_instance import get_controller_instance
+
 def convert_switch_name_to_dpid(name: str) -> int:
     """
     将交换机名（如 's1'）转换为对应的 dpid（数字）
@@ -20,6 +23,9 @@ def execute_instruction(instruction: dict) -> str:
 
     if action == "create_topology":
         result = mm.rebuild_topology(instruction)
+
+        net_bridge.global_net = mm.global_net
+        print("[DEBUG] mm module ID:", id(mm))
         print(f"[DEBUG] 拓扑创建结果: {result}")
 
         net = mm.global_net
@@ -160,6 +166,35 @@ def execute_instruction(instruction: dict) -> str:
             return f"❌ 节点 {target} 不存在"
         mm.global_net.delNode(node)
         return f"✅ 已删除节点 {target}"
+    
+    # 断开链路
+    elif action == "link_down":
+        print("[DEBUG] Flask 正准备调用 Ryu 的 /intent/link_down 接口")
+        # ✅ 在 link_down 前注入 global_net 给 Ryu 控制器
+        from backend.controller import controller_instance
+        ryu_controller = controller_instance.get_controller_instance()
+        if ryu_controller:
+            ryu_controller.mininet_net = net_bridge.global_net
+            print("[DEBUG] 已注入 global_net 到 Ryu 控制器:", id(net_bridge.global_net))
+        try:
+
+            
+
+
+            resp = requests.post(
+                "http://localhost:8081/intent/link_down",
+                json={"link": instruction.get("link", [])},
+                timeout=2
+            )
+            print("[DEBUG] Ryu link_down 接口返回状态:", resp.status_code)
+            if resp.status_code == 200:
+                return resp.text
+            else:
+                return f"❌ 控制器返回错误: {resp.status_code} - {resp.text}"
+        except Exception as e:
+            return f"❌ 无法连接控制器 REST 接口: {e}"
+
+
 
 # 对主机限速
     elif action == "limit_bandwidth":

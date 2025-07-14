@@ -10,6 +10,7 @@ class TopologyRestController(ControllerBase):
     def __init__(self, req, link, data, **config):
         super(TopologyRestController, self).__init__(req, link, data, **config)
 
+    # ping   localhost:8081/v1.0/topology/links可以获取当前链路信息
     @route('topo_links', '/v1.0/topology/links', methods=['GET'])
     def get_links(self, req, **kwargs):
         link_list = get_link(None, None)

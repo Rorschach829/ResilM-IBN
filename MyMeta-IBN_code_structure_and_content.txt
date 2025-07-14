@@ -11,9 +11,11 @@ Meta-IBN/
         net_simulation/
             instruction_executor.py
             mininet_manager.py
+            net_bridge.py
             ryu_controller.py
         controller/
             PathIntentController.py
+            controller_instance.py
             ryu_topology_rest.py
         agents/
             intent_agent.py
@@ -133,6 +135,9 @@ from backend.utils.utils import convert_switch_name_to_dpid
 from ryu_app.auto_generate_path_intents import build_and_send_all_path_intents
 import time
 import re
+from backend.net_simulation import net_bridge
+# from backend.controller.controller_instance import get_controller_instance
+
 def convert_switch_name_to_dpid(name: str) -> int:
     """
     将交换机名（如 's1'）转换为对应的 dpid（数字）
@@ -146,6 +151,9 @@ def execute_instruction(instruction: dict) -> str:
 
     if action == "create_topology":
         result = mm.rebuild_topology(instruction)
+
+        net_bridge.global_net = mm.global_net
+        print("[DEBUG] mm module ID:", id(mm))
         print(f"[DEBUG] 拓扑创建结果: {result}")
 
         net = mm.global_net
@@ -286,6 +294,35 @@ def execute_instruction(instruction: dict) -> str:
             return f"❌ 节点 {target} 不存在"
         mm.global_net.delNode(node)
         return f"✅ 已删除节点 {target}"
+    
+    # 断开链路
+    elif action == "link_down":
+        print("[DEBUG] Flask 正准备调用 Ryu 的 /intent/link_down 接口")
+        # ✅ 在 link_down 前注入 global_net 给 Ryu 控制器
+        from backend.controller import controller_instance
+        ryu_controller = controller_instance.get_controller_instance()
+        if ryu_controller:
+            ryu_controller.mininet_net = net_bridge.global_net
+            print("[DEBUG] 已注入 global_net 到 Ryu 控制器:", id(net_bridge.global_net))
+        try:
+
+            
+
+
+            resp = requests.post(
+                "http://localhost:8081/intent/link_down",
+                json={"link": instruction.get("link", [])},
+                timeout=2
+            )
+            print("[DEBUG] Ryu link_down 接口返回状态:", resp.status_code)
+            if resp.status_code == 200:
+                return resp.text
+            else:
+                return f"❌ 控制器返回错误: {resp.status_code} - {resp.text}"
+        except Exception as e:
+            return f"❌ 无法连接控制器 REST 接口: {e}"
+
+
 
 # 对主机限速
     elif action == "limit_bandwidth":
@@ -658,6 +695,12 @@ def clear_all_flow_tables():
             pass
 
 
+# 文件路径: ./backend/net_simulation/net_bridge.py
+# backend/net_simulation/net_bridge.py
+# 向ryu传入global_net
+global_net = None
+
+
 # 文件路径: ./backend/net_simulation/ryu_controller.py
 import requests
 import json
@@ -692,7 +735,7 @@ def send_flow_mod(flow_rule: dict) -> bool:
 # 文件路径: ./backend/controller/PathIntentController.py
 from ryu.base import app_manager
 from ryu.controller import ofp_event
-from ryu.controller.handler import MAIN_DISPATCHER, CONFIG_DISPATCHER, set_ev_cls
+from ryu.controller.handler import MAIN_DISPATCHER, CONFIG_DISPATCHER, DEAD_DISPATCHER, set_ev_cls
 from ryu.ofproto import ofproto_v1_3
 from ryu.lib.packet import packet, ethernet, arp, ipv4
 from ryu.topology import event
@@ -702,13 +745,33 @@ from ryu.controller import dpset
 from webob import Response
 import networkx as nx
 import json
+import traceback
+import select 
+
+print("[DEBUG] select.poll:", hasattr(select, "poll"))
+
+import ryu.lib.hub as hub
+print("[DEBUG] 当前 hub 使用:", hub.__file__)
+
+
+# 修复 eventlet/gevent 等污染的 select 模块
+import sys
+import importlib
+if "select" in sys.modules:
+    del sys.modules["select"]
+ # 强制导入标准库
 
 # 全局变量传给 REST 控制器
 intent_instance_name = 'intent_api_app'
 
 class PathIntentController(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
-    _CONTEXTS = { 'wsgi': WSGIApplication }
+    # _CONTEXTS = { 'wsgi': WSGIApplication }
+    _CONTEXTS = {
+        'wsgi': WSGIApplication,
+        'dpset': dpset.DPSet
+    }
+    _NAME = "PathIntentController"  # ✅ 命名用于 lookup
 
     def __init__(self, *args, **kwargs):
         super(PathIntentController, self).__init__(*args, **kwargs)
@@ -717,8 +780,13 @@ class PathIntentController(app_manager.RyuApp):
         self.hosts = {}  # IP -> (DPID, Port, MAC)
         self.net = nx.DiGraph()
         self.dpset = kwargs['dpset']
+        self.mininet_net = None
+        self.datapaths = {} # ✅ 用于记录连接的交换机 datapath
 
         wsgi.register(IntentWebController, {intent_instance_name: self})
+        self.logger.info("[DEBUG] PathIntentController 初始化成功")
+        self.logger.info(f"当前控制器注册名: {self.name}")
+
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
@@ -760,9 +828,38 @@ class PathIntentController(app_manager.RyuApp):
         self.mac_to_port.setdefault(dpid, {})
         self.mac_to_port[dpid][src] = in_port
 
-        if src not in self.hosts:
-            self.logger.info(f"注册新主机: {src} (dpid={dpid}, port={in_port})")
-            self.hosts[src] = (dpid, in_port, src)
+        src_mac = src.lower()
+
+        # === 主机注册增强逻辑 ===
+
+        # 跳过广播、组播、STP MAC
+        if src_mac.startswith("ff:ff") or src_mac.startswith("01:80:c2") or src_mac.startswith("33:33"):
+            self.logger.debug(f"[过滤] 忽略非法源 MAC: {src_mac}")
+            return
+
+        # 已注册则检查是否重复注册
+        if src_mac in self.hosts:
+            old_dpid, old_port, _ = self.hosts[src_mac]
+            if old_dpid == dpid and old_port == in_port:
+                return
+            else:
+                self.logger.debug(f"[主机重复学习] 已存在 {src_mac}，忽略新位置 dpid={dpid}, port={in_port}")
+                return
+
+        # 控制最大主机注册数（调试用）
+        if len(self.hosts) > 20:
+            self.logger.warning(f"[警告] 主机数量异常: 当前 {len(self.hosts)}，可能存在伪主机")
+            return
+
+        # 注册主机
+        self.logger.info(f"✅ 注册新主机: {src_mac} (dpid={dpid}, port={in_port})")
+        self.hosts[src_mac] = (dpid, in_port, src_mac)
+
+
+
+        # if src not in self.hosts:
+        #     self.logger.info(f"注册新主机: {src} (dpid={dpid}, port={in_port})")
+        #     self.hosts[src] = (dpid, in_port, src)
 
         # flooding only for ARP
         if pkt.get_protocol(arp.arp):
@@ -775,40 +872,53 @@ class PathIntentController(app_manager.RyuApp):
             )
             datapath.send_msg(out)
             return
+
     @set_ev_cls(event.EventLinkAdd)
     def update_links(self, ev):
         link = ev.link
-        src = link.src
-        dst = link.dst
+        src = f"s{link.src.dpid}"
+        dst = f"s{link.dst.dpid}"
 
-        self.net.add_edge(src.dpid, dst.dpid, port=src.port_no)
-        self.net.add_edge(dst.dpid, src.dpid, port=dst.port_no)
+        self.net.add_edge(src, dst, port=link.src.port_no)
+        self.net.add_edge(dst, src, port=link.dst.port_no)
 
-        self.logger.info(f"✅ update_links链路已添加: {src.dpid} <--> {dst.dpid}")
-        self.logger.info(f"✅ update links当前 NetworkX 图的边: {self.net.edges(data=True)}")
+        self.logger.info(f"✅ 链路已添加: {src} <--> {dst}")
+        self.logger.info(f"✅ 当前 NetworkX 图的边: {self.net.edges(data=True)}")
+
+
     @set_ev_cls(event.EventSwitchEnter)
     def get_topology_data(self, ev):
         switch_list = get_switch(self, None)
-        self.net.add_nodes_from([sw.dp.id for sw in switch_list])
+        self.net.add_nodes_from([f"s{sw.dp.id}" for sw in switch_list])
 
         link_list = get_link(self, None)
         for link in link_list:
-            src = link.src.dpid
-            dst = link.dst.dpid
-            self.logger.info(f"Link: {src} -> {dst}")
+            src = f"s{link.src.dpid}"
+            dst = f"s{link.dst.dpid}"
             self.net.add_edge(src, dst, port=link.src.port_no)
             self.net.add_edge(dst, src, port=link.dst.port_no)
 
-        # 新增打印
         self.logger.info(f"当前 NetworkX 图的节点: {list(self.net.nodes)}")
         self.logger.info(f"当前 NetworkX 图的边: {list(self.net.edges)}")
 
 
+
     def install_path_between_hosts(self, src_host: str, dst_host: str):
+
+                # 检查路径图中是否存在未注册的 DPID
+        registered_dpids = set(self.datapaths.keys())
+        all_path_dpids = set(self.net.nodes())
+
+        invalid_dpids = all_path_dpids - registered_dpids
+        if invalid_dpids:
+            self.logger.error(f"[❌错误] NetworkX 图中存在未连接的 DPID: {invalid_dpids}")
+            raise Exception(f"网络图中包含未注册交换机 DPID: {invalid_dpids}")
+
         self.logger.info(f"📌 [注册主机总数]: {len(self.hosts)}")
         self.logger.info(f"📌 [主机注册信息]:")
         for mac, (dpid, port, _) in self.hosts.items():
             self.logger.info(f"    MAC={mac}, DPID={dpid}, Port={port}")
+
         self.logger.info(f"准备下发路径：src_host={src_host}, dst_host={dst_host}")
         self.logger.info(f"当前已注册主机: {list(self.hosts.keys())}")
 
@@ -818,8 +928,14 @@ class PathIntentController(app_manager.RyuApp):
         if src_mac not in self.hosts or dst_mac not in self.hosts:
             raise Exception("源或目标主机未注册")
 
-        src_dpid, src_port, _ = self.hosts[src_mac]
-        dst_dpid, dst_port, _ = self.hosts[dst_mac]
+        # src_dpid, src_port, _ = self.hosts[src_mac]
+        # dst_dpid, dst_port, _ = self.hosts[dst_mac]
+        src_dpid_num, src_port, _ = self.hosts[src_mac]
+        dst_dpid_num, dst_port, _ = self.hosts[dst_mac]
+
+        src_dpid = f"s{src_dpid_num}"
+        dst_dpid = f"s{dst_dpid_num}"
+
 
         self.logger.info(f"✅ 当前 NetworkX 图的节点: {self.net.nodes()}")
         self.logger.info(f"✅ 当前 NetworkX 图的边: {self.net.edges(data=True)}")
@@ -827,34 +943,128 @@ class PathIntentController(app_manager.RyuApp):
         path = nx.shortest_path(self.net, src_dpid, dst_dpid)
         self.logger.info(f"路径: {src_mac}({src_dpid}) → {dst_mac}({dst_dpid}): {path}")
 
-        # 下发正向路径
-        for i in range(len(path) - 1):
-            cur, nex = path[i], path[i + 1]
-            out_port = self.net[cur][nex]['port']
+        # 下发正向路径流表
+        for i in range(len(path)):
+            cur = path[i]
+            if i == len(path) - 1:
+                # 最后一跳：交换机到目的主机
+                out_port = self.hosts[dst_mac][1]
+                self.logger.info(f"➡️ [正向] 最后一跳: dpid={cur} → 主机 {dst_mac}, 使用注册端口 {out_port}")
+            else:
+                nex = path[i + 1]
+                out_port = self.net[cur][nex]['port']
+                self.logger.info(f"➡️ [正向] dpid={cur} → dpid={nex}, out_port={out_port}")
+
             dp = self.get_datapath(cur)
             match = dp.ofproto_parser.OFPMatch(eth_src=src_mac, eth_dst=dst_mac)
             actions = [dp.ofproto_parser.OFPActionOutput(out_port)]
             self.add_flow(dp, 1, match, actions)
             self.logger.info(f"🚀 下发正向流表: dpid={cur}, src={src_mac}, dst={dst_mac}, out_port={out_port}")
 
+        # 下发回程路径流表
+        for i in range(len(path) - 1, -1, -1):
+            cur = path[i]
+            if i == 0:
+                out_port = self.hosts[src_mac][1]
+                self.logger.info(f"↩️ [回程] 最后一跳: dpid={cur} → 主机 {src_mac}, 使用注册端口 {out_port}")
+            else:
+                pre = path[i - 1]
+                out_port = self.net[cur][pre]['port']
+                self.logger.info(f"↩️ [回程] dpid={cur} → dpid={pre}, out_port={out_port}")
 
-        # 下发回程路径
-        for i in range(len(path) - 1, 0, -1):
-            cur, pre = path[i], path[i - 1]
-            out_port = self.net[cur][pre]['port']
             dp = self.get_datapath(cur)
             match = dp.ofproto_parser.OFPMatch(eth_src=dst_mac, eth_dst=src_mac)
             actions = [dp.ofproto_parser.OFPActionOutput(out_port)]
             self.add_flow(dp, 1, match, actions)
             self.logger.info(f"🚀 下发回程流表: dpid={cur}, src={dst_mac}, dst={src_mac}, out_port={out_port}")
 
+        # 添加主机默认接入流表（以便非路径流量也能送到主机）★7.13这一天的目的就是为了让gpt写出下面这几行。气死我了。
+        for mac, (dpid, port, _) in self.hosts.items():
+            dp = self.get_datapath(dpid)
+            match = dp.ofproto_parser.OFPMatch(eth_dst=mac)
+            actions = [dp.ofproto_parser.OFPActionOutput(port)]
+            self.add_flow(dp, 1, match, actions)
+            self.logger.info(f"🔁 添加主机接入流表: dpid={dpid}, dst={mac}, out_port={port}")
 
 
     def get_datapath(self, dpid):
+        if isinstance(dpid, str) and dpid.startswith("s"):
+            dpid_num = int(dpid[1:])
+        else:
+            dpid_num = int(dpid)
+
         for dp_id, dp in self.dpset.get_all():
-            if dp.id == dpid:
+            if dp.id == dpid_num:
                 return dp
-        raise Exception(f"找不到对应的datapath: {dpid}")
+        raise Exception(f"找不到对应的 datapath: {dpid}")
+
+
+    @set_ev_cls(ofp_event.EventOFPStateChange, [MAIN_DISPATCHER, DEAD_DISPATCHER])
+    def state_change_handler(self, ev):
+        dp = ev.datapath
+        if ev.state == MAIN_DISPATCHER:
+            if dp.id not in self.datapaths:
+                self.logger.info(f"✅ 新交换机上线: DPID={dp.id}")
+            # self.datapaths[dp.id] = dp
+            self.datapaths[f"s{dp.id}"] = dp
+        elif ev.state == DEAD_DISPATCHER:
+            dpid = dp.id
+            if dpid in self.datapaths:
+                self.logger.warning(f"❌ 交换机离线: DPID={dpid}，正在清除相关状态...")
+
+                # 1. 删除 datapath 引用
+                del self.datapaths[dpid]
+
+                # 2. 清除主机列表中挂在该交换机下的主机
+                to_remove = [mac for mac, (d, _, _) in self.hosts.items() if d == dpid]
+                for mac in to_remove:
+                    del self.hosts[mac]
+                    self.logger.info(f"🧹 主机已移除: {mac} (原挂在 DPID={dpid})")
+
+                # 3. 清除 NetworkX 拓扑图中节点
+                if dpid in self.net:
+                    self.net.remove_node(dpid)
+                    self.logger.info(f"🧹 NetworkX 图中移除节点: DPID={dpid}")
+
+                self.logger.info(f"✅ 状态清除完成: DPID={dpid}")    
+    
+    # backend/controller/path_intent_controller.py
+
+    def link_down(self, src_switch: str, dst_switch: str):
+        self.logger.info("以下消息由link_down方法输出")
+        self.logger.debug(f"当前 NetworkX 图边数量: {self.net.number_of_edges()}")
+
+        mininet_net = self.mininet_net
+        print("[DEBUG] 使用注入的 mininet_net:", id(mininet_net))
+
+        try:
+            self.logger.info(f"🚧 准备断开链路: {src_switch} ↔ {dst_switch}")
+
+            # 1. 更新 NetworkX 拓扑图
+            if self.net.has_edge(src_switch, dst_switch):
+                self.net.remove_edge(src_switch, dst_switch)
+                self.logger.info(f"🧠 拓扑图中已删除边: {src_switch} ↔ {dst_switch}")
+            else:
+                self.logger.warning(f"⚠️ 拓扑图中未找到边: {src_switch} ↔ {dst_switch}")
+
+            # 2. 真正断开 Mininet 中链路
+            if mininet_net:
+                link = mininet_net.linksBetween(
+                    mininet_net.get(src_switch),
+                    mininet_net.get(dst_switch)
+                )
+                if link:
+                    link[0].intf1.ifconfig('down')
+                    link[0].intf2.ifconfig('down')
+                    self.logger.info(f"✅ Mininet 中链路已禁用: {src_switch} ↔ {dst_switch}")
+                else:
+                    self.logger.warning(f"⚠️ Mininet 中未找到链路: {src_switch} ↔ {dst_switch}")
+            else:
+                self.logger.warning("⚠️ Mininet 实例未创建，跳过实际断链")
+
+        except Exception as e:
+            self.logger.error(f"❌ 链路断开失败: {e}")
+
 
 class IntentWebController(ControllerBase):
     def __init__(self, req, link, data, **config):
@@ -897,6 +1107,61 @@ class IntentWebController(ControllerBase):
         host_list = list(self.intent_app.hosts.keys())  # MAC 地址列表
         return Response(content_type='application/json',
                         body=json.dumps(host_list).encode('utf-8'))
+    
+    # 断开链路
+    @route('link_down', '/intent/link_down', methods=['POST'])
+    def link_down_api(self, req, **kwargs):
+        print("[DEBUG] ✅RYU收到 /intent/link_down 请求")
+
+        try:
+            print("[DEBUG] 开始处理 /intent/link_down 的api请求")
+            content = req.json if req.body else {}
+            src, dst = content.get("link", [None, None])
+            if not src or not dst:
+                return Response(status=400, body="参数错误")
+
+            # ❌ 删除旧代码：不要再导入 mm.global_net
+            # ✅ mininet_net 由 Flask 注入 controller，直接使用
+            self.intent_app.link_down(src, dst)
+            return Response(status=200, body=f"✅ 链路断开成功: {src} ↔ {dst}")
+
+        except Exception as e:
+            print("[DEBUG] 链路断开失败堆栈:")
+            traceback.print_exc()
+            return Response(status=500, body=f"❌ 执行失败: {e}")
+
+
+
+
+
+
+# 文件路径: ./backend/controller/controller_instance.py
+# backend/controller/controller_instance.py
+
+
+
+# ⚠️ 创建控制器上下文模拟器（可选）
+# 或者通过 wsgi 或 app_manager 获取已运行的实例
+
+# 假设你在主启动器已加载 PathIntentController
+
+# 在这里暴露 controller_instance = 已经注册的 PathIntentController
+# 通常你可以通过 app_manager.lookup_service_brick 来获取
+
+# backend/controller/controller_instance.py
+
+from ryu.base.app_manager import lookup_service_brick
+import time
+def get_controller_instance(timeout=5):
+    """
+    等待 Ryu 注册控制器实例，避免 None
+    """
+    for i in range(timeout):
+        instance = lookup_service_brick("PathIntentController")
+        if instance is not None:
+            return instance
+        time.sleep(1)
+    return None
 
 
 
@@ -913,6 +1178,7 @@ class TopologyRestController(ControllerBase):
     def __init__(self, req, link, data, **config):
         super(TopologyRestController, self).__init__(req, link, data, **config)
 
+    # ping   localhost:8081/v1.0/topology/links可以获取当前链路信息
     @route('topo_links', '/v1.0/topology/links', methods=['GET'])
     def get_links(self, req, **kwargs):
         link_list = get_link(None, None)
@@ -1071,7 +1337,12 @@ class IntentAgent:
 - 此意图用于取消对指定主机的所有限速规则；
 - 实现方法是调用 `tc qdisc del dev hX-eth0 root` 命令。
 
-
+9. link_down
+   - link: 包含两个交换机名的数组，如 ["s1", "s3"]
+说明：
+- 当用户说“断开 s1 和 s3 之间的连接”、“切断 s1 与 s3 的链路”、“恢复 s1 到 s3 的连通性”等语句时，应判断为 link_down 或 link_up；
+- link 中的顺序不限；
+- 严格输出 link 字段为长度为 2 的字符串数组。
 
 示例：
 
@@ -1283,7 +1554,7 @@ from mininet.util import quietRun
 def trigger_controller_learn_hosts(net):
     print("[INTENT] 正在触发主机之间通信，帮助控制器学习主机...")
     try:
-        print("[INTENT] 等待主机进程完全稳定...")
+        print("[INTENT] 等待主机进程完全稳定...下面马上执行pingALL。信息来自trigger_controller_learn_hosts")
         time.sleep(3)  # 建议延时 2 秒以上
         # 建议使用 pingPairs 更快，避免 broadcast
         net.pingAll(timeout='1')
@@ -1346,25 +1617,6 @@ def safe_ping(h1, h2):
         print(f"[PING] ✅ {h1.name} -> {h2.name} 成功")
     except Exception as e:
         print(f"[WARN] ❌ {h1.name} ping {h2.name} 失败: {e}")
-
-# def trigger_controller_learn_hosts(net):
-#     """
-#     遍历所有主机对，触发 ping，促使控制器注册主机
-#     """
-#     print("[INTENT] 正在触发主机之间通信，帮助控制器学习主机...")
-    
-#     host_names = [h.name for h in net.hosts]
-
-#     # 等待主机真正准备好
-#     print("[INTENT] 等待主机进程完全稳定...")
-#     time.sleep(2)  # 如有必要可以调成 3-5 秒
-
-#     for i in range(len(host_names)):
-#         for j in range(i + 1, len(host_names)):
-#             h1 = net.get(host_names[i])
-#             h2 = net.get(host_names[j])
-#             safe_ping(h1, h2)
-
 
 
 # 文件路径: ./backend/utils/utils.py
@@ -1770,21 +2022,21 @@ if __name__ == '__main__':
       });
     }
 
-    async function fetchTokenUsage() {
-      try {
-        const res = await fetch(serverUrl + "/token_stats");
-        const data = await res.json();
-        document.getElementById("tokenCount").innerText = data.total_tokens || 0;
-      } catch (err) {
-        console.error("Token 获取失败", err);
-      }
-    }
+    // async function fetchTokenUsage() {
+    //   try {
+    //     const res = await fetch(serverUrl + "/token_stats");
+    //     const data = await res.json();
+    //     document.getElementById("tokenCount").innerText = data.total_tokens || 0;
+    //   } catch (err) {
+    //     console.error("Token 获取失败", err);
+    //   }
+    // }
 
-    // 每 5 秒刷新一次 token 数
-    setInterval(fetchTokenUsage, 5000000);
+    // // 每 5 秒刷新一次 token 数
+    // setInterval(fetchTokenUsage, 5000000);
 
-    // 页面首次加载时立即获取一次
-    fetchTokenUsage();
+    // // 页面首次加载时立即获取一次
+    // fetchTokenUsage();
 
     loadTopology();
   </script>
