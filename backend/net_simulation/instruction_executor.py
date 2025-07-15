@@ -8,6 +8,7 @@ from ryu_app.auto_generate_path_intents import build_and_send_all_path_intents
 from backend.net_simulation import net_bridge
 from backend.utils.logger import start_new_intent_log, log_intent
 from backend.net_simulation.mininet_manager import stop_topology
+
 import time
 import re
 import os
@@ -242,6 +243,13 @@ def execute_instruction(instruction: dict) -> str:
 
             # Step 2: 执行重建
             stop_topology()
+            from backend.controller import controller_instance
+            ctl = controller_instance.get_controller_instance()
+            if ctl:
+                ctl.reset_state()
+            else:
+                print("[WARN] 获取 PathIntentController 实例失败，无法清空控制器状态")
+
             results = []
             for idx, instr in enumerate(instructions):
                 action = instr.get("action")

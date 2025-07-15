@@ -348,6 +348,15 @@ class PathIntentController(app_manager.RyuApp):
             self.logger.error(f"❌ 链路断开失败: {e}")
             self.logger.error(traceback.format_exc())
 
+    # 重置控制器状态
+    def reset_state(self):
+        self.logger.info("[RESET] 正在清空控制器状态")
+        self.hosts.clear()
+        self.net.clear()
+        self.datapaths.clear()
+        self.logger.info("[RESET] 控制器状态清空完毕")
+
+
 
 class IntentWebController(ControllerBase):
     def __init__(self, req, link, data, **config):
