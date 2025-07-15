@@ -5,10 +5,12 @@ import requests
 from backend.utils.ryu_utils import get_all_switch_ids
 from backend.utils.utils import convert_switch_name_to_dpid
 from ryu_app.auto_generate_path_intents import build_and_send_all_path_intents
+from backend.net_simulation import net_bridge
+from backend.utils.logger import start_new_intent_log, log_intent
+from backend.net_simulation.mininet_manager import stop_topology
 import time
 import re
-from backend.net_simulation import net_bridge
-# from backend.controller.controller_instance import get_controller_instance
+import os
 
 def convert_switch_name_to_dpid(name: str) -> int:
     """
@@ -18,10 +20,14 @@ def convert_switch_name_to_dpid(name: str) -> int:
         return int(name[1:])
     raise ValueError(f"无法识别的交换机名: {name}")
 
+# 根据LLM输出的不同action进行不同操作
 def execute_instruction(instruction: dict) -> str:
     action = instruction.get("action")
 
     if action == "create_topology":
+        
+        # 当创建新拓扑的时候，新建json记录文件
+        start_new_intent_log()
 
         # ✅ 清空 controller 注册状态，防止重复注册主机
         from backend.controller import controller_instance
@@ -193,6 +199,43 @@ def execute_instruction(instruction: dict) -> str:
                 return f"❌ 控制器返回错误: {resp.status_code} - {resp.text}"
         except Exception as e:
             return f"❌ 无法连接控制器 REST 接口: {e}"
+
+    elif action == "link_up":
+        from backend.utils.logger import CURRENT_LOG_FILE
+        if not CURRENT_LOG_FILE or not os.path.exists(CURRENT_LOG_FILE):
+            return "❌ 当前 session 没有找到日志文件，无法执行 link_up"
+
+        try:
+            target_link = instruction.get("link", [])
+            link_variants = [target_link, target_link[::-1]]  # 支持 ["s1", "s2"] 或 ["s2", "s1"]
+
+            # Step 1: 读取所有意图，跳过指定 link_down
+            with open(CURRENT_LOG_FILE, "r", encoding="utf-8") as f:
+                blocks = f.read().split("\n\n")
+                instructions = []
+                for block in blocks:
+                    if not block.strip():
+                        continue
+                    entry = json.loads(block)
+                    instr = entry.get("instruction", {})
+                    if not instr:
+                        continue
+                    if instr.get("action") == "link_down" and instr.get("link") in link_variants:
+                        print(f"[SKIP] 跳过断链: {instr['link']}")
+                        continue
+                    instructions.append(instr)
+
+            # Step 2: 执行重建
+            stop_topology()
+            results = []
+            for instr in instructions:
+                result = execute_instruction(instr)
+                results.append(f"[{instr.get('action')}] => {result}")
+
+            return "✅ link_up 完成，已恢复拓扑并保留其他断链操作\n" + "\n".join(results)
+
+        except Exception as e:
+            return f"❌ link_up 执行失败: {e}"
 
 
 

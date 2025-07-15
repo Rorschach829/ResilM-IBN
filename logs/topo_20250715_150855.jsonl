@@ -1,0 +1,81 @@
+{
+  "timestamp": "2025-07-15 15:09:44",
+  "intent": "创建一个网络拓扑，交换机s1连接s2，每台交换机下面连了2台主机",
+  "instruction": {
+    "action": "create_topology",
+    "hosts": [
+      "h1",
+      "h2",
+      "h3",
+      "h4"
+    ],
+    "switches": [
+      "s1",
+      "s2"
+    ],
+    "links": [
+      {
+        "src": "h1",
+        "dst": "s1"
+      },
+      {
+        "src": "h2",
+        "dst": "s1"
+      },
+      {
+        "src": "h3",
+        "dst": "s2"
+      },
+      {
+        "src": "h4",
+        "dst": "s2"
+      },
+      {
+        "src": "s1",
+        "dst": "s2"
+      }
+    ],
+    "controller": {
+      "type": "RemoteController",
+      "ip": "127.0.0.1",
+      "port": 6633
+    }
+  },
+  "result": "✅ 拓扑创建成功"
+}
+
+{
+  "timestamp": "2025-07-15 15:11:09",
+  "intent": "在s1上安装流表，阻断从10.0.0.1到10.0.0.4的ICMP流量，优先级100",
+  "instruction": {
+    "action": "install_flowtable",
+    "switches": [
+      "s1"
+    ],
+    "extra": {
+      "match": {
+        "dl_type": 2048,
+        "nw_src": "10.0.0.1",
+        "nw_dst": "10.0.0.4",
+        "nw_proto": 1
+      },
+      "actions": "DENY",
+      "priority": 100
+    }
+  },
+  "result": "✅ 流表下发成功 (阻断 {'dl_type': 2048, 'nw_src': '10.0.0.1', 'nw_dst': '10.0.0.4', 'nw_proto': 1})"
+}
+
+{
+  "timestamp": "2025-07-15 15:11:18",
+  "intent": "断开s1和s2的连接",
+  "instruction": {
+    "action": "link_down",
+    "link": [
+      "s1",
+      "s2"
+    ]
+  },
+  "result": "✅ 链路断开成功: s1 ↔ s2"
+}
+

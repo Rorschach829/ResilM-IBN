@@ -67,7 +67,7 @@ def get_current_topology():
 
 def rebuild_topology(intent_json: dict) -> str:
     global global_net
-
+    cleanup()
 # 清空残留流表
     print("[清理流表] 正在清空所有交换机流表...")
     clear_all_flow_tables()
@@ -111,15 +111,15 @@ def rebuild_topology(intent_json: dict) -> str:
 
 def stop_topology() -> str:
     global global_net
-    if not global_net:
-        return "当前没有运行中的拓扑"
-
     try:
-        global_net.stop()
-        global_net = None
-        return "拓扑已成功停止"
+        if global_net:
+            global_net.stop()
+            global_net = None
+        cleanup()  # ✅ 等价于 mn -c
+        return "✅ 拓扑已停止并清理残留资源"
     except Exception as e:
-        return f"停止拓扑失败: {str(e)}"
+        return f"❌ 停止拓扑失败: {str(e)}"
+
 
 def build_mininet_code_from_json(data: dict, enable_stp: bool = True) -> str:
     hosts = data.get("hosts", [])
