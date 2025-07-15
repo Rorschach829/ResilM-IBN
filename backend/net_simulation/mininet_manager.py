@@ -265,13 +265,16 @@ def build_mininet_code_from_json(data: dict, enable_stp: bool = True) -> str:
 from ryu.lib import dpid as dpid_lib
 import requests
 
+from backend.utils.ryu_utils import get_all_switch_ids
+
 def clear_all_flow_tables():
-    for dpid in range(1, 256):  # 假设最多 255 个交换机
+    switch_ids = get_all_switch_ids()
+    for dpid in switch_ids:
         url = f"http://localhost:8081/stats/flowentry/clear/{dpid}"
         try:
-            resp = requests.delete(url)
+            resp = requests.delete(url, timeout=1)
             if resp.status_code == 200:
                 print(f"[清理流表] ✅ dpid={dpid} 流表已清空")
-        except Exception as e:
-            # 控制台可以不输出错误，避免误报
+        except Exception:
             pass
+

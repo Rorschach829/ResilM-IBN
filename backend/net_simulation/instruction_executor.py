@@ -12,6 +12,13 @@ import time
 import re
 import os
 
+# 在执行link_up的恢复网络操作时，跳过以下actions
+SKIP_ACTIONS_ON_RECOVERY = {
+    "ping_test",
+    "get_flowtable",
+    "verify_bandwidth"
+}
+
 def convert_switch_name_to_dpid(name: str) -> int:
     """
     将交换机名（如 's1'）转换为对应的 dpid（数字）
@@ -220,24 +227,32 @@ def execute_instruction(instruction: dict) -> str:
                     instr = entry.get("instruction", {})
                     if not instr:
                         continue
+
+                    # 跳过那个断链link_down的操作
                     if instr.get("action") == "link_down" and instr.get("link") in link_variants:
                         print(f"[SKIP] 跳过断链: {instr['link']}")
                         continue
+
+                    # 跳过无副作用动作
+                    if instr.get("action") in SKIP_ACTIONS_ON_RECOVERY:
+                        print(f"[SKIP] 跳过无副作用动作: {instr['action']}")
+                        continue
+                    
                     instructions.append(instr)
 
             # Step 2: 执行重建
             stop_topology()
             results = []
-            for instr in instructions:
+            for idx, instr in enumerate(instructions):
+                action = instr.get("action")
                 result = execute_instruction(instr)
-                results.append(f"[{instr.get('action')}] => {result}")
+                results.append(f"[REPLAY 回放动作 {idx+1}] [{action}] => {result}")
+
 
             return "✅ link_up 完成，已恢复拓扑并保留其他断链操作\n" + "\n".join(results)
 
         except Exception as e:
             return f"❌ link_up 执行失败: {e}"
-
-
 
 # 对主机限速
     elif action == "limit_bandwidth":
@@ -264,7 +279,8 @@ def execute_instruction(instruction: dict) -> str:
             return f"✅ 限速设置成功: {src} → {dst}, 速率限制为 {rate}Mbps\n执行结果:\n{result}"
         except Exception as e:
             return f"❌ 限速失败: {e}"
-# 对主机测速
+
+    # 对主机测速
     elif action == "verify_bandwidth":
         src = instruction.get("src_host")
         dst = instruction.get("dst_host")
@@ -307,7 +323,6 @@ def execute_instruction(instruction: dict) -> str:
             return f"✅ 已取消主机 {host} 的限速设置\n执行结果:\n{result}"
         except Exception as e:
             return f"❌ 取消限速失败: {e}"
-
 
     else:
         return f"❌ 未识别的指令类型: {action}"
