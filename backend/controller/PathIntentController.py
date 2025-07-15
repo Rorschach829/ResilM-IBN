@@ -130,9 +130,9 @@ class PathIntentController(app_manager.RyuApp):
                 return
 
         # 控制最大主机注册数（调试用）
-        if len(self.hosts) > 20:
-            self.logger.warning(f"[警告] 主机数量异常: 当前 {len(self.hosts)}，可能存在伪主机")
-            return
+        # if len(self.hosts) > 100:
+        #     self.logger.warning(f"[警告] 主机数量异常: 当前 {len(self.hosts)}，可能存在伪主机")
+        #     return
 
         # 注册主机
         self.logger.info(f"✅ 注册新主机: {src_mac} (dpid={dpid}, port={in_port}, ip={src_ip})")

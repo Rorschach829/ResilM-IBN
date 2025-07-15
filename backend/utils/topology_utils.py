@@ -94,6 +94,7 @@ def ping_once_per_host(net, timeout=1):
 def ping_once_multi_target(net, timeout=1):
     hosts = net.hosts
     output_lines = ["*** Ping per host to multiple targets"]
+    start = time.time()  # ⏱️ 开始计时
     for i, src in enumerate(hosts):
         # ping 3 个目标，错开热点
         for offset in [7, 13, 19]:
@@ -101,6 +102,10 @@ def ping_once_multi_target(net, timeout=1):
             result = src.cmd(f"ping -c1 -W{timeout} {dst.IP()}")
             ok = "1 received" in result or "0% packet loss" in result
             output_lines.append(f"{src.name} -> {dst.name}: {'OK' if ok else 'X'}")
+    
+    end = time.time()  # ⏱️ 结束计时
+    elapsed = round(end - start, 4)
+    output_lines.append(f"⏱️ 总耗时: {elapsed} 秒")
     return "\n".join(output_lines)
 
 

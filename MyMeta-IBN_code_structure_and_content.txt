@@ -260,6 +260,7 @@ from ryu_app.auto_generate_path_intents import build_and_send_all_path_intents
 from backend.net_simulation import net_bridge
 from backend.utils.logger import start_new_intent_log, log_intent
 from backend.net_simulation.mininet_manager import stop_topology
+from backend.utils.topology_utils import ping_pairs_multi_thread_safe, ping_pairs_single_thread
 import mininet.log
 from contextlib import redirect_stdout
 import sys
@@ -267,6 +268,7 @@ import time
 import re
 import os
 import io
+import traceback
 
 # 在执行link_up的恢复网络操作时，跳过以下actions
 SKIP_ACTIONS_ON_RECOVERY = {
@@ -296,7 +298,7 @@ def execute_instruction(instruction: dict) -> str:
         from backend.controller import controller_instance
         controller = controller_instance.get_controller_instance()
         result = mm.rebuild_topology(instruction)
-
+        
         net_bridge.global_net = mm.global_net
         print("[DEBUG] mm module ID:", id(mm))
         print(f"[DEBUG] 拓扑创建结果: {result}")
@@ -304,12 +306,6 @@ def execute_instruction(instruction: dict) -> str:
         net = mm.global_net
 
         if net:
-            from backend.utils.topology_utils import trigger_controller_learn_hosts
-            try:
-                trigger_controller_learn_hosts(net)
-            except Exception as e:
-                print(f"[WARN] trigger_controller_learn_hosts 执行失败: {e}")
-
             expected_hosts = len(net.hosts)
             if wait_for_all_hosts(expected=expected_hosts, timeout=15):
                 build_and_send_all_path_intents(net)
@@ -463,6 +459,7 @@ def execute_instruction(instruction: dict) -> str:
         except Exception as e:
             return f"❌ 无法连接控制器 REST 接口: {e}"
 
+# 恢复链路，原理是恢复当前的网络操作并且跳过link_down
     elif action == "link_up":
         from backend.utils.logger import CURRENT_LOG_FILE
         if not CURRENT_LOG_FILE or not os.path.exists(CURRENT_LOG_FILE):
@@ -510,7 +507,6 @@ def execute_instruction(instruction: dict) -> str:
                 action = instr.get("action")
                 result = execute_instruction(instr)
                 results.append(f"[REPLAY 回放动作 {idx+1}] [{action}] => {result}")
-
 
             return "✅ link_up 完成，已恢复拓扑并保留其他断链操作\n" + "\n".join(results)
 
@@ -587,34 +583,25 @@ def execute_instruction(instruction: dict) -> str:
         except Exception as e:
             return f"❌ 取消限速失败: {e}"
 
+    # 测试所有主机连通性
+    # 后续可加入结构化输出（JSON），方便前端展示和 agent 分析
     elif action == "ping_all":
         if not mm.global_net:
             return "❌ 当前没有拓扑"
-
+        net = mm.global_net
         try:
-            net = mm.global_net
-            hosts = net.hosts
-            output_lines = ["*** Ping: testing ping reachability"]
+            # 暂时不用单线程
+            # print("=== 单线程 ===")
+            # res1 = ping_pairs_single_thread(net)
+            # print("\n".join(res1))
 
-            for src in hosts:
-                line = f"{src.name} -> "
-                results = []
-                for dst in hosts:
-                    if src == dst:
-                        continue
-                    result = src.cmd(f"ping -c1 -W1 {dst.IP()}")
-                    if "1 packets transmitted, 1 received" in result or "0% packet loss" in result:
-                        results.append(dst.name)
-                    else:
-                        results.append("X")
-                line += " ".join(results)
-                output_lines.append(line)
-
-            output = "\n".join(output_lines)
-            return f"✅ 全部主机连通性测试完成\n{output.strip()}"
+            print("=== 多线程双向ping_pairs测试===")
+            res2 = ping_pairs_multi_thread_safe(net)
+            output = "\n".join(res2)
+            return f"✅ 全部主机连通性测试完成（多线程）\n{output}"
 
         except Exception as e:
-            return f"❌ ping_all 执行失败: {e}"
+            return f"❌ pingAll 执行失败: {e}\n{traceback.format_exc()}"
 
 
 def wait_for_all_hosts(expected=9, timeout=10):
@@ -739,7 +726,7 @@ def rebuild_topology(intent_json: dict) -> str:
             print(f"[ARP] 已为 {len(hosts_info)} 个主机配置静态 ARP 条目")
 
         global_net = net
-        # 执行一次pingall
+        # 执行一次pingPairs
         trigger_controller_learn_hosts(global_net)
         return "✅ 拓扑创建成功"
 
@@ -880,7 +867,7 @@ def build_mininet_code_from_json(data: dict, enable_stp: bool = True) -> str:
         "    configure_static_arp(hosts_info)",
         "",
         "add_arp_entries()",
-        # "# 手动pingall ",
+        # "# 手动pingPairs ",
         "# 查看每台主机的 ARP 表",
         "print('\\n=== 每台主机 ARP 表 ===')",
         "for h in net.hosts:",
@@ -1597,9 +1584,9 @@ class IntentAgent:
 - 严格输出 link 字段为长度为 2 的字符串数组。
 
 11. ping_all
-   - 无参数，表示对当前网络中的所有主机执行 pingAll 连通性测试
+   - 无参数，表示对当前网络中的所有主机执行 ping_all 连通性测试
 说明：
-- 用户可能会说“测试全部连通性”、“所有主机 ping 一下”、“检测网络连接状态”等，都解析为 ping_all；
+- 用户可能会说“测试全部连通性”、“所有主机 ping 一下”、“检测网络连接状态”、“测试主机间连通性”等，都解析为 ping_all；
 - 输出 JSON 结构只需包含 {{ "action": "ping_all" }}
 
 
@@ -1808,19 +1795,17 @@ def get_total_tokens():
 
 # 文件路径: ./backend/utils/topology_utils.py
 # backend/utils/topology_utils.py
-
+import concurrent.futures
 import time
 import requests
 from mininet.util import quietRun
-
+import networkx as nx
 def trigger_controller_learn_hosts(net):
     print("[INTENT] 正在触发主机之间通信，帮助控制器学习主机...")
     try:
-        print("[INTENT] 等待主机进程完全稳定...下面马上执行pingALL。信息来自trigger_controller_learn_hosts")
-        time.sleep(3)  # 建议延时 2 秒以上
-        # 建议使用 pingPairs 更快，避免 broadcast
-        net.pingAll(timeout='1')
-        print("[PING] ✅ 主机间 ping 完成")
+        print("[INTENT] 等待主机进程完全稳定...马上ping_pairs。信息来自trigger_controller_learn_hosts")
+        # time.sleep(2)  # 建议延时 2 秒以上
+        print(ping_once_multi_target(net, timeout=1))
     except Exception as e:
         print(f"[PING] ❌ 主机间 ping 失败: {e}")
 
@@ -1851,7 +1836,7 @@ def wait_for_stp_convergence(switches_info: dict, timeout: int = 35, interval: i
 
 # 文件: backend/utils/topology_utils.py
 
-import networkx as nx
+
 
 def build_networkx_graph_from_mininet(net):
     """
@@ -1879,6 +1864,93 @@ def safe_ping(h1, h2):
         print(f"[PING] ✅ {h1.name} -> {h2.name} 成功")
     except Exception as e:
         print(f"[WARN] ❌ {h1.name} ping {h2.name} 失败: {e}")
+
+# 让每台主机主动发送一次数据包，
+# 仅用于触发 PacketIn，从而使控制器得以感知该主机的 MAC、IP、所连交换机及端口信息
+def ping_once_per_host(net, timeout=1):
+    hosts = net.hosts
+    output_lines = ["*** Trigger PacketIn by one ping per host"]
+
+    start = time.time()  # ⏱️ 开始计时
+
+    for i, src in enumerate(hosts):
+        dst = hosts[(i + 1) % len(hosts)]  # 环形 ping
+        result = src.cmd(f"ping -c1 -W{timeout} {dst.IP()}")
+
+        ok = "1 packets transmitted, 1 received" in result or "0% packet loss" in result
+        output_lines.append(f"{src.name} -> {dst.name}: {'OK' if ok else 'X'}")
+
+    end = time.time()  # ⏱️ 结束计时
+    elapsed = round(end - start, 4)
+    output_lines.append(f"⏱️ 耗时: {elapsed} 秒")
+
+    return "\n".join(output_lines)
+
+# ping_once_per_host的升级版，一次性向3台主机发数据包，提高packetin的概率
+def ping_once_multi_target(net, timeout=1):
+    hosts = net.hosts
+    output_lines = ["*** Ping per host to multiple targets"]
+    for i, src in enumerate(hosts):
+        # ping 3 个目标，错开热点
+        for offset in [7, 13, 19]:
+            dst = hosts[(i + offset) % len(hosts)]
+            result = src.cmd(f"ping -c1 -W{timeout} {dst.IP()}")
+            ok = "1 received" in result or "0% packet loss" in result
+            output_lines.append(f"{src.name} -> {dst.name}: {'OK' if ok else 'X'}")
+    return "\n".join(output_lines)
+
+
+# 多线程双向ping_pairs
+def ping_pairs_multi_thread_safe(net, timeout=1):
+    hosts = net.hosts
+    results = []
+
+    def ping_from(src):
+        line_results = []
+        for dst in hosts:
+            if src == dst:
+                continue
+            result = src.cmd(f"ping -c1 -W{timeout} {dst.IP()}")
+            ok = "1 packets transmitted, 1 received" in result or "0% packet loss" in result
+            line_results.append(f"{src.name} -> {dst.name}: {'OK' if ok else 'X'}")
+        return line_results
+
+    import time, concurrent.futures
+    start = time.time()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(ping_from, src) for src in hosts]
+        for f in concurrent.futures.as_completed(futures):
+            results.extend(f.result())
+
+    end = time.time()
+    print(f"⚡ 多线程（按主机并发）ping_pairs 耗时: {end - start:.4f} 秒")
+    return results
+
+
+# 单线程双向ping_pairs
+def ping_pairs_single_thread(net, timeout=1):
+    hosts = net.hosts
+    results = []
+    start = time.time()
+
+    for i in range(len(hosts)):
+        for j in range(i + 1, len(hosts)):
+            src = hosts[i]
+            dst = hosts[j]
+
+            result1 = src.cmd(f"ping -c1 -W{timeout} {dst.IP()}")
+            result2 = dst.cmd(f"ping -c1 -W{timeout} {src.IP()}")
+
+            ok1 = "1 packets transmitted, 1 received" in result1 or "0% packet loss" in result1
+            ok2 = "1 packets transmitted, 1 received" in result2 or "0% packet loss" in result2
+
+            results.append(f"{src.name} -> {dst.name}: {'OK' if ok1 else 'X'}")
+            results.append(f"{dst.name} -> {src.name}: {'OK' if ok2 else 'X'}")
+
+    end = time.time()
+    print(f"🔹 单线程双向 ping_pairs 耗时: {end - start:.4f} 秒")
+    return results
 
 
 # 文件路径: ./backend/utils/utils.py
@@ -1920,16 +1992,10 @@ import requests
 import time
 import networkx as nx
 from backend.utils.topology_utils import build_networkx_graph_from_mininet
-from backend.utils.topology_utils import trigger_controller_learn_hosts
 def build_and_send_all_path_intents(net):
     """
     对网络中每一对主机生成最短路径流表，并下发到 Ryu 控制器。
     """
-    print("[INTENT] 正在触发主机之间通信，帮助控制器学习主机...")
-    trigger_controller_learn_hosts(net)
-    print("[INTENT] 等待主机进程完全稳定...")
-    time.sleep(2)
-
     hosts = net.hosts
     host_names = [h.name for h in hosts]
 
