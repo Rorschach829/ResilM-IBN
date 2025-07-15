@@ -4,12 +4,15 @@ import time
 import requests
 from mininet.util import quietRun
 import networkx as nx
+from concurrent.futures import ThreadPoolExecutor
+
+
 def trigger_controller_learn_hosts(net):
     print("[INTENT] 正在触发主机之间通信，帮助控制器学习主机...")
     try:
         print("[INTENT] 等待主机进程完全稳定...马上ping_pairs。信息来自trigger_controller_learn_hosts")
         # time.sleep(2)  # 建议延时 2 秒以上
-        print(ping_once_per_host(net, timeout=1))
+        print(fast_host_activation(net, timeout=1))
     except Exception as e:
         print(f"[PING] ❌ 主机间 ping 失败: {e}")
 
@@ -124,7 +127,7 @@ def ping_pairs_multi_thread_safe(net, timeout=1):
             line_results.append(f"{src.name} -> {dst.name}: {'OK' if ok else 'X'}")
         return line_results
 
-    import time, concurrent.futures
+    
     start = time.time()
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
@@ -160,3 +163,30 @@ def ping_pairs_single_thread(net, timeout=1):
     end = time.time()
     print(f"🔹 单线程双向 ping_pairs 耗时: {end - start:.4f} 秒")
     return results
+
+# 用于创建拓扑时快速激活主机
+def fast_host_activation(net, timeout=1):
+    """
+    真正并发触发所有主机对的 ping（只发一次包），用于控制器学习。
+    """
+    hosts = net.hosts
+    output_lines = ["*** 快速主机唤醒（全并发触发 PacketIn）"]
+
+    start = time.time()
+
+    def ping_once_pair(i):
+        src = hosts[i]
+        dst = hosts[(i + 1) % len(hosts)]
+        result = src.cmd(f"ping -c1 -W{timeout} {dst.IP()}")
+        ok = "1 packets transmitted, 1 received" in result or "0% packet loss" in result
+        return f"{src.name} -> {dst.name}: {'OK' if ok else 'X'}"
+
+    with ThreadPoolExecutor(max_workers=32) as executor:
+        futures = [executor.submit(ping_once_pair, i) for i in range(len(hosts))]
+        for f in futures:
+            output_lines.append(f.result())
+
+    end = time.time()
+    elapsed = round(end - start, 4)
+    output_lines.append(f"⏱️ 并发唤醒完成，耗时: {elapsed} 秒")
+    return "\n".join(output_lines)
