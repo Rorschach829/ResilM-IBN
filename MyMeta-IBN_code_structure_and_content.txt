@@ -260,10 +260,13 @@ from ryu_app.auto_generate_path_intents import build_and_send_all_path_intents
 from backend.net_simulation import net_bridge
 from backend.utils.logger import start_new_intent_log, log_intent
 from backend.net_simulation.mininet_manager import stop_topology
-
+import mininet.log
+from contextlib import redirect_stdout
+import sys
 import time
 import re
 import os
+import io
 
 # 在执行link_up的恢复网络操作时，跳过以下actions
 SKIP_ACTIONS_ON_RECOVERY = {
@@ -584,8 +587,35 @@ def execute_instruction(instruction: dict) -> str:
         except Exception as e:
             return f"❌ 取消限速失败: {e}"
 
-    else:
-        return f"❌ 未识别的指令类型: {action}"
+    elif action == "ping_all":
+        if not mm.global_net:
+            return "❌ 当前没有拓扑"
+
+        try:
+            net = mm.global_net
+            hosts = net.hosts
+            output_lines = ["*** Ping: testing ping reachability"]
+
+            for src in hosts:
+                line = f"{src.name} -> "
+                results = []
+                for dst in hosts:
+                    if src == dst:
+                        continue
+                    result = src.cmd(f"ping -c1 -W1 {dst.IP()}")
+                    if "1 packets transmitted, 1 received" in result or "0% packet loss" in result:
+                        results.append(dst.name)
+                    else:
+                        results.append("X")
+                line += " ".join(results)
+                output_lines.append(line)
+
+            output = "\n".join(output_lines)
+            return f"✅ 全部主机连通性测试完成\n{output.strip()}"
+
+        except Exception as e:
+            return f"❌ ping_all 执行失败: {e}"
+
 
 def wait_for_all_hosts(expected=9, timeout=10):
     import requests
@@ -1566,6 +1596,13 @@ class IntentAgent:
 - link 中的顺序不限；
 - 严格输出 link 字段为长度为 2 的字符串数组。
 
+11. ping_all
+   - 无参数，表示对当前网络中的所有主机执行 pingAll 连通性测试
+说明：
+- 用户可能会说“测试全部连通性”、“所有主机 ping 一下”、“检测网络连接状态”等，都解析为 ping_all；
+- 输出 JSON 结构只需包含 {{ "action": "ping_all" }}
+
+
 示例：
 
 当用户意图为：删除阻止 h1 ping h2 的流表规则
@@ -1980,6 +2017,8 @@ def build_and_send_all_path_intents(net):
       padding: 10px;
       white-space: pre-wrap;
       border: 1px solid #ddd;
+      max-height: 500px;
+      overflow-y: auto;
     }
 
     svg {
@@ -2014,8 +2053,6 @@ def build_and_send_all_path_intents(net):
     <div id="tokenDisplay" style="position: fixed; bottom: 10px; right: 20px; background-color: #f0f0f0; padding: 8px; border-radius: 5px; font-size: 14px;">
       Tokens Used: <span id="tokenCount">0</span>
     </div>
-    
-    
   </div>
 
   <script>
@@ -2059,7 +2096,10 @@ def build_and_send_all_path_intents(net):
               ? data.output.interpretation
               : data.output;
 
-            text += `类型: ${data.instruction.action}\n结果: ${resultText}\n时间: ${now}\n\n`;
+            console.log("🧪 后端返回：", resultText);  // 用于调试
+            console.log("[前端 DEBUG] 后端返回 output:", resultText);
+
+            text += `类型: ${data.instruction.action}\n结果:\n${resultText}\n时间: ${now}\n\n`;
             inputs[i].style.backgroundColor = "#d2f8d2";
 
             if (["create_topology", "install_flowtable"].includes(data.instruction.action)) {
@@ -2076,7 +2116,7 @@ def build_and_send_all_path_intents(net):
 
       document.getElementById("batch-response").textContent = results.join("\n");
     }
-    
+
     async function stopTopology() {
       const confirmed = confirm("你确定要退出并删除当前拓扑吗？");
       if (!confirmed) return;
@@ -2089,7 +2129,6 @@ def build_and_send_all_path_intents(net):
         const data = await res.json();
         alert("✅ 拓扑删除结果: " + data.message);
 
-        // 删除成功后刷新图
         loadTopology();
       } catch (err) {
         alert("❌ 删除失败：" + err);
@@ -2118,7 +2157,7 @@ def build_and_send_all_path_intents(net):
         .on("start", dragstarted)
         .on("drag", dragged)
         .on("end", dragended);
-    } 
+    }
 
     async function loadTopology() {
       const res = await fetch(serverUrl + "/topology");
@@ -2134,7 +2173,6 @@ def build_and_send_all_path_intents(net):
 
       const g = svg.append("g");
 
-      // 缩放支持
       svg.call(
         d3.zoom()
           .scaleExtent([0.5, 2])
@@ -2156,14 +2194,12 @@ def build_and_send_all_path_intents(net):
         .join("line")
         .attr("stroke-width", 2);
 
-      // 创建节点容器 <g>
       const nodeGroup = g.append("g")
         .selectAll("g")
         .data(nodes)
         .join("g")
         .call(drag(simulation));
 
-      // 根据类型插入图片
       nodeGroup.append("image")
         .attr("xlink:href", d => d.type === "switch" ? "/static/img/switch.png" : "/static/img/host.png")
         .attr("width", 40)
@@ -2171,7 +2207,6 @@ def build_and_send_all_path_intents(net):
         .attr("x", -20)
         .attr("y", -20);
 
-      // 添加标签
       nodeGroup.append("text")
         .text(d => d.id)
         .attr("y", 30)
@@ -2179,7 +2214,6 @@ def build_and_send_all_path_intents(net):
         .attr("font-size", 13)
         .attr("fill", "#000");
 
-      // Tick 更新位置
       simulation.on("tick", () => {
         link
           .attr("x1", d => d.source.x)
@@ -2191,22 +2225,6 @@ def build_and_send_all_path_intents(net):
           .attr("transform", d => `translate(${d.x},${d.y})`);
       });
     }
-
-    // async function fetchTokenUsage() {
-    //   try {
-    //     const res = await fetch(serverUrl + "/token_stats");
-    //     const data = await res.json();
-    //     document.getElementById("tokenCount").innerText = data.total_tokens || 0;
-    //   } catch (err) {
-    //     console.error("Token 获取失败", err);
-    //   }
-    // }
-
-    // // 每 5 秒刷新一次 token 数
-    // setInterval(fetchTokenUsage, 5000000);
-
-    // // 页面首次加载时立即获取一次
-    // fetchTokenUsage();
 
     loadTopology();
   </script>

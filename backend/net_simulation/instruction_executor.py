@@ -8,6 +8,7 @@ from ryu_app.auto_generate_path_intents import build_and_send_all_path_intents
 from backend.net_simulation import net_bridge
 from backend.utils.logger import start_new_intent_log, log_intent
 from backend.net_simulation.mininet_manager import stop_topology
+from backend.utils.topology_utils import ping_pairs_multi_thread_safe, ping_pairs_single_thread
 import mininet.log
 from contextlib import redirect_stdout
 import sys
@@ -15,6 +16,7 @@ import time
 import re
 import os
 import io
+import traceback
 
 # 在执行link_up的恢复网络操作时，跳过以下actions
 SKIP_ACTIONS_ON_RECOVERY = {
@@ -44,7 +46,7 @@ def execute_instruction(instruction: dict) -> str:
         from backend.controller import controller_instance
         controller = controller_instance.get_controller_instance()
         result = mm.rebuild_topology(instruction)
-
+        
         net_bridge.global_net = mm.global_net
         print("[DEBUG] mm module ID:", id(mm))
         print(f"[DEBUG] 拓扑创建结果: {result}")
@@ -52,12 +54,6 @@ def execute_instruction(instruction: dict) -> str:
         net = mm.global_net
 
         if net:
-            from backend.utils.topology_utils import trigger_controller_learn_hosts
-            try:
-                trigger_controller_learn_hosts(net)
-            except Exception as e:
-                print(f"[WARN] trigger_controller_learn_hosts 执行失败: {e}")
-
             expected_hosts = len(net.hosts)
             if wait_for_all_hosts(expected=expected_hosts, timeout=15):
                 build_and_send_all_path_intents(net)
@@ -211,6 +207,7 @@ def execute_instruction(instruction: dict) -> str:
         except Exception as e:
             return f"❌ 无法连接控制器 REST 接口: {e}"
 
+# 恢复链路，原理是恢复当前的网络操作并且跳过link_down
     elif action == "link_up":
         from backend.utils.logger import CURRENT_LOG_FILE
         if not CURRENT_LOG_FILE or not os.path.exists(CURRENT_LOG_FILE):
@@ -258,7 +255,6 @@ def execute_instruction(instruction: dict) -> str:
                 action = instr.get("action")
                 result = execute_instruction(instr)
                 results.append(f"[REPLAY 回放动作 {idx+1}] [{action}] => {result}")
-
 
             return "✅ link_up 完成，已恢复拓扑并保留其他断链操作\n" + "\n".join(results)
 
@@ -335,34 +331,25 @@ def execute_instruction(instruction: dict) -> str:
         except Exception as e:
             return f"❌ 取消限速失败: {e}"
 
+    # 测试所有主机连通性
+    # 后续可加入结构化输出（JSON），方便前端展示和 agent 分析
     elif action == "ping_all":
         if not mm.global_net:
             return "❌ 当前没有拓扑"
-
+        net = mm.global_net
         try:
-            net = mm.global_net
-            hosts = net.hosts
-            output_lines = ["*** Ping: testing ping reachability"]
+            # 暂时不用单线程
+            # print("=== 单线程 ===")
+            # res1 = ping_pairs_single_thread(net)
+            # print("\n".join(res1))
 
-            for src in hosts:
-                line = f"{src.name} -> "
-                results = []
-                for dst in hosts:
-                    if src == dst:
-                        continue
-                    result = src.cmd(f"ping -c1 -W1 {dst.IP()}")
-                    if "1 packets transmitted, 1 received" in result or "0% packet loss" in result:
-                        results.append(dst.name)
-                    else:
-                        results.append("X")
-                line += " ".join(results)
-                output_lines.append(line)
-
-            output = "\n".join(output_lines)
-            return f"✅ 全部主机连通性测试完成\n{output.strip()}"
+            print("=== 多线程双向ping_pairs测试===")
+            res2 = ping_pairs_multi_thread_safe(net)
+            output = "\n".join(res2)
+            return f"✅ 全部主机连通性测试完成（多线程）\n{output}"
 
         except Exception as e:
-            return f"❌ ping_all 执行失败: {e}"
+            return f"❌ pingAll 执行失败: {e}\n{traceback.format_exc()}"
 
 
 def wait_for_all_hosts(expected=9, timeout=10):

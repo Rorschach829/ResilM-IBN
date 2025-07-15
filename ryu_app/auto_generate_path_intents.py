@@ -2,16 +2,10 @@ import requests
 import time
 import networkx as nx
 from backend.utils.topology_utils import build_networkx_graph_from_mininet
-from backend.utils.topology_utils import trigger_controller_learn_hosts
 def build_and_send_all_path_intents(net):
     """
     对网络中每一对主机生成最短路径流表，并下发到 Ryu 控制器。
     """
-    print("[INTENT] 正在触发主机之间通信，帮助控制器学习主机...")
-    trigger_controller_learn_hosts(net)
-    print("[INTENT] 等待主机进程完全稳定...")
-    time.sleep(2)
-
     hosts = net.hosts
     host_names = [h.name for h in hosts]
 

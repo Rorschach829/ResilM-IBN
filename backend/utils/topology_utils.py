@@ -1,17 +1,15 @@
 # backend/utils/topology_utils.py
-
+import concurrent.futures
 import time
 import requests
 from mininet.util import quietRun
-
+import networkx as nx
 def trigger_controller_learn_hosts(net):
     print("[INTENT] 正在触发主机之间通信，帮助控制器学习主机...")
     try:
-        print("[INTENT] 等待主机进程完全稳定...下面马上执行pingALL。信息来自trigger_controller_learn_hosts")
-        time.sleep(3)  # 建议延时 2 秒以上
-        # 建议使用 pingPairs 更快，避免 broadcast
-        net.pingAll(timeout='1')
-        print("[PING] ✅ 主机间 ping 完成")
+        print("[INTENT] 等待主机进程完全稳定...马上ping_pairs。信息来自trigger_controller_learn_hosts")
+        # time.sleep(2)  # 建议延时 2 秒以上
+        print(ping_once_multi_target(net, timeout=1))
     except Exception as e:
         print(f"[PING] ❌ 主机间 ping 失败: {e}")
 
@@ -42,7 +40,7 @@ def wait_for_stp_convergence(switches_info: dict, timeout: int = 35, interval: i
 
 # 文件: backend/utils/topology_utils.py
 
-import networkx as nx
+
 
 def build_networkx_graph_from_mininet(net):
     """
@@ -70,3 +68,90 @@ def safe_ping(h1, h2):
         print(f"[PING] ✅ {h1.name} -> {h2.name} 成功")
     except Exception as e:
         print(f"[WARN] ❌ {h1.name} ping {h2.name} 失败: {e}")
+
+# 让每台主机主动发送一次数据包，
+# 仅用于触发 PacketIn，从而使控制器得以感知该主机的 MAC、IP、所连交换机及端口信息
+def ping_once_per_host(net, timeout=1):
+    hosts = net.hosts
+    output_lines = ["*** Trigger PacketIn by one ping per host"]
+
+    start = time.time()  # ⏱️ 开始计时
+
+    for i, src in enumerate(hosts):
+        dst = hosts[(i + 1) % len(hosts)]  # 环形 ping
+        result = src.cmd(f"ping -c1 -W{timeout} {dst.IP()}")
+
+        ok = "1 packets transmitted, 1 received" in result or "0% packet loss" in result
+        output_lines.append(f"{src.name} -> {dst.name}: {'OK' if ok else 'X'}")
+
+    end = time.time()  # ⏱️ 结束计时
+    elapsed = round(end - start, 4)
+    output_lines.append(f"⏱️ 耗时: {elapsed} 秒")
+
+    return "\n".join(output_lines)
+
+# ping_once_per_host的升级版，一次性向3台主机发数据包，提高packetin的概率
+def ping_once_multi_target(net, timeout=1):
+    hosts = net.hosts
+    output_lines = ["*** Ping per host to multiple targets"]
+    for i, src in enumerate(hosts):
+        # ping 3 个目标，错开热点
+        for offset in [7, 13, 19]:
+            dst = hosts[(i + offset) % len(hosts)]
+            result = src.cmd(f"ping -c1 -W{timeout} {dst.IP()}")
+            ok = "1 received" in result or "0% packet loss" in result
+            output_lines.append(f"{src.name} -> {dst.name}: {'OK' if ok else 'X'}")
+    return "\n".join(output_lines)
+
+
+# 多线程双向ping_pairs
+def ping_pairs_multi_thread_safe(net, timeout=1):
+    hosts = net.hosts
+    results = []
+
+    def ping_from(src):
+        line_results = []
+        for dst in hosts:
+            if src == dst:
+                continue
+            result = src.cmd(f"ping -c1 -W{timeout} {dst.IP()}")
+            ok = "1 packets transmitted, 1 received" in result or "0% packet loss" in result
+            line_results.append(f"{src.name} -> {dst.name}: {'OK' if ok else 'X'}")
+        return line_results
+
+    import time, concurrent.futures
+    start = time.time()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(ping_from, src) for src in hosts]
+        for f in concurrent.futures.as_completed(futures):
+            results.extend(f.result())
+
+    end = time.time()
+    print(f"⚡ 多线程（按主机并发）ping_pairs 耗时: {end - start:.4f} 秒")
+    return results
+
+
+# 单线程双向ping_pairs
+def ping_pairs_single_thread(net, timeout=1):
+    hosts = net.hosts
+    results = []
+    start = time.time()
+
+    for i in range(len(hosts)):
+        for j in range(i + 1, len(hosts)):
+            src = hosts[i]
+            dst = hosts[j]
+
+            result1 = src.cmd(f"ping -c1 -W{timeout} {dst.IP()}")
+            result2 = dst.cmd(f"ping -c1 -W{timeout} {src.IP()}")
+
+            ok1 = "1 packets transmitted, 1 received" in result1 or "0% packet loss" in result1
+            ok2 = "1 packets transmitted, 1 received" in result2 or "0% packet loss" in result2
+
+            results.append(f"{src.name} -> {dst.name}: {'OK' if ok1 else 'X'}")
+            results.append(f"{dst.name} -> {src.name}: {'OK' if ok2 else 'X'}")
+
+    end = time.time()
+    print(f"🔹 单线程双向 ping_pairs 耗时: {end - start:.4f} 秒")
+    return results

@@ -101,7 +101,7 @@ def rebuild_topology(intent_json: dict) -> str:
             print(f"[ARP] 已为 {len(hosts_info)} 个主机配置静态 ARP 条目")
 
         global_net = net
-        # 执行一次pingall
+        # 执行一次pingPairs
         trigger_controller_learn_hosts(global_net)
         return "✅ 拓扑创建成功"
 
@@ -242,7 +242,7 @@ def build_mininet_code_from_json(data: dict, enable_stp: bool = True) -> str:
         "    configure_static_arp(hosts_info)",
         "",
         "add_arp_entries()",
-        # "# 手动pingall ",
+        # "# 手动pingPairs ",
         "# 查看每台主机的 ARP 表",
         "print('\\n=== 每台主机 ARP 表 ===')",
         "for h in net.hosts:",
