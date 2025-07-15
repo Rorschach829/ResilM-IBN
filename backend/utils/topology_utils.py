@@ -9,7 +9,7 @@ def trigger_controller_learn_hosts(net):
     try:
         print("[INTENT] 等待主机进程完全稳定...马上ping_pairs。信息来自trigger_controller_learn_hosts")
         # time.sleep(2)  # 建议延时 2 秒以上
-        print(ping_once_multi_target(net, timeout=1))
+        print(ping_once_per_host(net, timeout=1))
     except Exception as e:
         print(f"[PING] ❌ 主机间 ping 失败: {e}")
 
@@ -109,7 +109,7 @@ def ping_once_multi_target(net, timeout=1):
     return "\n".join(output_lines)
 
 
-# 多线程双向ping_pairs
+# 多线程双向ping_pairs,建议多使用这个函数
 def ping_pairs_multi_thread_safe(net, timeout=1):
     hosts = net.hosts
     results = []
