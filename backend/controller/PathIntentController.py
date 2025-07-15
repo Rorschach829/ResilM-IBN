@@ -331,9 +331,14 @@ class PathIntentController(app_manager.RyuApp):
                     mininet_net.get(dst_switch)
                 )
                 if link:
-                    link[0].intf1.ifconfig('down')
-                    link[0].intf2.ifconfig('down')
+                    link_obj = link[0]
+                    link_obj.intf1.ifconfig('down')
+                    link_obj.intf2.ifconfig('down')
                     self.logger.info(f"✅ Mininet 中链路已禁用: {src_switch} ↔ {dst_switch}")
+                    # ✅ 从 mininet 中彻底移除该 link
+                    if link_obj in mininet_net.links:
+                        mininet_net.links.remove(link_obj)
+                        self.logger.info(f"🧹 Mininet 中 link 对象已移除")
                 else:
                     self.logger.warning(f"⚠️ Mininet 中未找到链路: {src_switch} ↔ {dst_switch}")
             else:
@@ -341,6 +346,7 @@ class PathIntentController(app_manager.RyuApp):
 
         except Exception as e:
             self.logger.error(f"❌ 链路断开失败: {e}")
+            self.logger.error(traceback.format_exc())
 
 
 class IntentWebController(ControllerBase):
