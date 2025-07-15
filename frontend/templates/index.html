@@ -41,6 +41,8 @@
       padding: 10px;
       white-space: pre-wrap;
       border: 1px solid #ddd;
+      max-height: 500px;
+      overflow-y: auto;
     }
 
     svg {
@@ -75,8 +77,6 @@
     <div id="tokenDisplay" style="position: fixed; bottom: 10px; right: 20px; background-color: #f0f0f0; padding: 8px; border-radius: 5px; font-size: 14px;">
       Tokens Used: <span id="tokenCount">0</span>
     </div>
-    
-    
   </div>
 
   <script>
@@ -120,7 +120,10 @@
               ? data.output.interpretation
               : data.output;
 
-            text += `类型: ${data.instruction.action}\n结果: ${resultText}\n时间: ${now}\n\n`;
+            console.log("🧪 后端返回：", resultText);  // 用于调试
+            console.log("[前端 DEBUG] 后端返回 output:", resultText);
+
+            text += `类型: ${data.instruction.action}\n结果:\n${resultText}\n时间: ${now}\n\n`;
             inputs[i].style.backgroundColor = "#d2f8d2";
 
             if (["create_topology", "install_flowtable"].includes(data.instruction.action)) {
@@ -137,7 +140,7 @@
 
       document.getElementById("batch-response").textContent = results.join("\n");
     }
-    
+
     async function stopTopology() {
       const confirmed = confirm("你确定要退出并删除当前拓扑吗？");
       if (!confirmed) return;
@@ -150,7 +153,6 @@
         const data = await res.json();
         alert("✅ 拓扑删除结果: " + data.message);
 
-        // 删除成功后刷新图
         loadTopology();
       } catch (err) {
         alert("❌ 删除失败：" + err);
@@ -179,7 +181,7 @@
         .on("start", dragstarted)
         .on("drag", dragged)
         .on("end", dragended);
-    } 
+    }
 
     async function loadTopology() {
       const res = await fetch(serverUrl + "/topology");
@@ -195,7 +197,6 @@
 
       const g = svg.append("g");
 
-      // 缩放支持
       svg.call(
         d3.zoom()
           .scaleExtent([0.5, 2])
@@ -217,14 +218,12 @@
         .join("line")
         .attr("stroke-width", 2);
 
-      // 创建节点容器 <g>
       const nodeGroup = g.append("g")
         .selectAll("g")
         .data(nodes)
         .join("g")
         .call(drag(simulation));
 
-      // 根据类型插入图片
       nodeGroup.append("image")
         .attr("xlink:href", d => d.type === "switch" ? "/static/img/switch.png" : "/static/img/host.png")
         .attr("width", 40)
@@ -232,7 +231,6 @@
         .attr("x", -20)
         .attr("y", -20);
 
-      // 添加标签
       nodeGroup.append("text")
         .text(d => d.id)
         .attr("y", 30)
@@ -240,7 +238,6 @@
         .attr("font-size", 13)
         .attr("fill", "#000");
 
-      // Tick 更新位置
       simulation.on("tick", () => {
         link
           .attr("x1", d => d.source.x)
@@ -252,22 +249,6 @@
           .attr("transform", d => `translate(${d.x},${d.y})`);
       });
     }
-
-    // async function fetchTokenUsage() {
-    //   try {
-    //     const res = await fetch(serverUrl + "/token_stats");
-    //     const data = await res.json();
-    //     document.getElementById("tokenCount").innerText = data.total_tokens || 0;
-    //   } catch (err) {
-    //     console.error("Token 获取失败", err);
-    //   }
-    // }
-
-    // // 每 5 秒刷新一次 token 数
-    // setInterval(fetchTokenUsage, 5000000);
-
-    // // 页面首次加载时立即获取一次
-    // fetchTokenUsage();
 
     loadTopology();
   </script>

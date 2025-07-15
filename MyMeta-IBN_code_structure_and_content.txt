@@ -34,9 +34,6 @@ Meta-IBN/
     ryu_app/
         __init__.py
         auto_generate_path_intents.py
-    test/
-        test_ds.py
-        test_mininet.py
         templates/
             index.html
 
@@ -260,10 +257,20 @@ import requests
 from backend.utils.ryu_utils import get_all_switch_ids
 from backend.utils.utils import convert_switch_name_to_dpid
 from ryu_app.auto_generate_path_intents import build_and_send_all_path_intents
+from backend.net_simulation import net_bridge
+from backend.utils.logger import start_new_intent_log, log_intent
+from backend.net_simulation.mininet_manager import stop_topology
+
 import time
 import re
-from backend.net_simulation import net_bridge
-# from backend.controller.controller_instance import get_controller_instance
+import os
+
+# 在执行link_up的恢复网络操作时，跳过以下actions
+SKIP_ACTIONS_ON_RECOVERY = {
+    "ping_test",
+    "get_flowtable",
+    "verify_bandwidth"
+}
 
 def convert_switch_name_to_dpid(name: str) -> int:
     """
@@ -273,10 +280,14 @@ def convert_switch_name_to_dpid(name: str) -> int:
         return int(name[1:])
     raise ValueError(f"无法识别的交换机名: {name}")
 
+# 根据LLM输出的不同action进行不同操作
 def execute_instruction(instruction: dict) -> str:
     action = instruction.get("action")
 
     if action == "create_topology":
+        
+        # 当创建新拓扑的时候，新建json记录文件
+        start_new_intent_log()
 
         # ✅ 清空 controller 注册状态，防止重复注册主机
         from backend.controller import controller_instance
@@ -449,7 +460,59 @@ def execute_instruction(instruction: dict) -> str:
         except Exception as e:
             return f"❌ 无法连接控制器 REST 接口: {e}"
 
+    elif action == "link_up":
+        from backend.utils.logger import CURRENT_LOG_FILE
+        if not CURRENT_LOG_FILE or not os.path.exists(CURRENT_LOG_FILE):
+            return "❌ 当前 session 没有找到日志文件，无法执行 link_up"
 
+        try:
+            target_link = instruction.get("link", [])
+            link_variants = [target_link, target_link[::-1]]  # 支持 ["s1", "s2"] 或 ["s2", "s1"]
+
+            # Step 1: 读取所有意图，跳过指定 link_down
+            with open(CURRENT_LOG_FILE, "r", encoding="utf-8") as f:
+                blocks = f.read().split("\n\n")
+                instructions = []
+                for block in blocks:
+                    if not block.strip():
+                        continue
+                    entry = json.loads(block)
+                    instr = entry.get("instruction", {})
+                    if not instr:
+                        continue
+
+                    # 跳过那个断链link_down的操作
+                    if instr.get("action") == "link_down" and instr.get("link") in link_variants:
+                        print(f"[SKIP] 跳过断链: {instr['link']}")
+                        continue
+
+                    # 跳过无副作用动作
+                    if instr.get("action") in SKIP_ACTIONS_ON_RECOVERY:
+                        print(f"[SKIP] 跳过无副作用动作: {instr['action']}")
+                        continue
+                    
+                    instructions.append(instr)
+
+            # Step 2: 执行重建
+            stop_topology()
+            from backend.controller import controller_instance
+            ctl = controller_instance.get_controller_instance()
+            if ctl:
+                ctl.reset_state()
+            else:
+                print("[WARN] 获取 PathIntentController 实例失败，无法清空控制器状态")
+
+            results = []
+            for idx, instr in enumerate(instructions):
+                action = instr.get("action")
+                result = execute_instruction(instr)
+                results.append(f"[REPLAY 回放动作 {idx+1}] [{action}] => {result}")
+
+
+            return "✅ link_up 完成，已恢复拓扑并保留其他断链操作\n" + "\n".join(results)
+
+        except Exception as e:
+            return f"❌ link_up 执行失败: {e}"
 
 # 对主机限速
     elif action == "limit_bandwidth":
@@ -476,7 +539,8 @@ def execute_instruction(instruction: dict) -> str:
             return f"✅ 限速设置成功: {src} → {dst}, 速率限制为 {rate}Mbps\n执行结果:\n{result}"
         except Exception as e:
             return f"❌ 限速失败: {e}"
-# 对主机测速
+
+    # 对主机测速
     elif action == "verify_bandwidth":
         src = instruction.get("src_host")
         dst = instruction.get("dst_host")
@@ -519,7 +583,6 @@ def execute_instruction(instruction: dict) -> str:
             return f"✅ 已取消主机 {host} 的限速设置\n执行结果:\n{result}"
         except Exception as e:
             return f"❌ 取消限速失败: {e}"
-
 
     else:
         return f"❌ 未识别的指令类型: {action}"
@@ -612,7 +675,7 @@ def get_current_topology():
 
 def rebuild_topology(intent_json: dict) -> str:
     global global_net
-
+    cleanup()
 # 清空残留流表
     print("[清理流表] 正在清空所有交换机流表...")
     clear_all_flow_tables()
@@ -656,15 +719,15 @@ def rebuild_topology(intent_json: dict) -> str:
 
 def stop_topology() -> str:
     global global_net
-    if not global_net:
-        return "当前没有运行中的拓扑"
-
     try:
-        global_net.stop()
-        global_net = None
-        return "拓扑已成功停止"
+        if global_net:
+            global_net.stop()
+            global_net = None
+        cleanup()  # ✅ 等价于 mn -c
+        return "✅ 拓扑已停止并清理残留资源"
     except Exception as e:
-        return f"停止拓扑失败: {str(e)}"
+        return f"❌ 停止拓扑失败: {str(e)}"
+
 
 def build_mininet_code_from_json(data: dict, enable_stp: bool = True) -> str:
     hosts = data.get("hosts", [])
@@ -810,16 +873,19 @@ def build_mininet_code_from_json(data: dict, enable_stp: bool = True) -> str:
 from ryu.lib import dpid as dpid_lib
 import requests
 
+from backend.utils.ryu_utils import get_all_switch_ids
+
 def clear_all_flow_tables():
-    for dpid in range(1, 256):  # 假设最多 255 个交换机
+    switch_ids = get_all_switch_ids()
+    for dpid in switch_ids:
         url = f"http://localhost:8081/stats/flowentry/clear/{dpid}"
         try:
-            resp = requests.delete(url)
+            resp = requests.delete(url, timeout=1)
             if resp.status_code == 200:
                 print(f"[清理流表] ✅ dpid={dpid} 流表已清空")
-        except Exception as e:
-            # 控制台可以不输出错误，避免误报
+        except Exception:
             pass
+
 
 
 # 文件路径: ./backend/net_simulation/net_bridge.py
@@ -1210,6 +1276,15 @@ class PathIntentController(app_manager.RyuApp):
             self.logger.error(f"❌ 链路断开失败: {e}")
             self.logger.error(traceback.format_exc())
 
+    # 重置控制器状态
+    def reset_state(self):
+        self.logger.info("[RESET] 正在清空控制器状态")
+        self.hosts.clear()
+        self.net.clear()
+        self.datapaths.clear()
+        self.logger.info("[RESET] 控制器状态清空完毕")
+
+
 
 class IntentWebController(ControllerBase):
     def __init__(self, req, link, data, **config):
@@ -1480,7 +1555,14 @@ class IntentAgent:
 9. link_down
    - link: 包含两个交换机名的数组，如 ["s1", "s3"]
 说明：
-- 当用户说“断开 s1 和 s3 之间的连接”、“切断 s1 与 s3 的链路”、“恢复 s1 到 s3 的连通性”等语句时，应判断为 link_down 或 link_up；
+- 当用户说“断开 s1 和 s3 之间的连接”、“切断 s1 与 s3 的链路”、“切断s1 到 s3 的连通性”等语句时，应判断为 link_down；
+- link 中的顺序不限；
+- 严格输出 link 字段为长度为 2 的字符串数组。
+
+10. link_up
+   - link: 包含两个交换机名的数组，如 ["s1", "s3"]
+说明：
+- 当用户说“恢复 s1 和 s3 之间的连接”、“恢复s1 与 s3 的链路”等语句时，应判断为link_up；
 - link 中的顺序不限；
 - 严格输出 link 字段为长度为 2 的字符串数组。
 
@@ -1610,37 +1692,40 @@ def validate_arp_connectivity(hosts_info: dict, expected_peers: list = None) -> 
 
 
 # 文件路径: ./backend/utils/logger.py
+# backend/utils/logger.py
+
 import os
 import json
 from datetime import datetime
 
 BASE_LOG_DIR = "/data/gjw/Meta-IBN/logs"
+CURRENT_LOG_FILE = None  # 🆕 当前正在记录的文件路径（每次创建拓扑会更新它）
+
+def start_new_intent_log():
+    global CURRENT_LOG_FILE
+    now = datetime.now()
+    ts = now.strftime("%Y%m%d_%H%M%S")
+    file_name = f"topo_{ts}.jsonl"
+    full_path = os.path.join(BASE_LOG_DIR, file_name)
+    os.makedirs(BASE_LOG_DIR, exist_ok=True)
+    CURRENT_LOG_FILE = full_path
+    return CURRENT_LOG_FILE
 
 def log_intent(intent_text: str, instruction: dict, result: str):
-    now = datetime.now()
-    day_folder = now.strftime("%Y-%m-%d")
-    timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
+    global CURRENT_LOG_FILE
+    if not CURRENT_LOG_FILE:
+        # fallback（首次使用未初始化）
+        start_new_intent_log()
 
-    # 拼接路径
-    log_dir = os.path.join(BASE_LOG_DIR, day_folder)
-    log_path = os.path.join(log_dir, "intent_log.jsonl")
-
-    # 确保目录存在
-    os.makedirs(log_dir, exist_ok=True)
-
-    # 构造日志项
     log_entry = {
-        "timestamp": timestamp,
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "intent": intent_text,
         "instruction": instruction,
         "result": result
     }
 
-    with open(log_path, "a", encoding="utf-8") as f:
-        # 横向很长显示
-        # f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+    with open(CURRENT_LOG_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(log_entry, ensure_ascii=False, indent=2) + "\n\n")
-
 
 
 # 文件路径: ./backend/utils/ryu_utils.py
@@ -1849,61 +1934,6 @@ def build_and_send_all_path_intents(net):
                 print(f"❌ 请求异常: {src_name} → {dst_name}, 错误: {e}")
 
     print(f"[INTENT] 流表下发完成: 成功 {success_count} 对，失败 {fail_count} 对")
-
-
-# 文件路径: ./test/test_ds.py
-# Please install OpenAI SDK first: `pip3 install openai`
-
-from openai import OpenAI
-
-client = OpenAI(api_key="sk-692005762cca46ac9faf28703ae6efe0", base_url="https://api.deepseek.com")
-
-response = client.chat.completions.create(
-    model="deepseek-chat",
-    messages=[
-        {"role": "system", "content": "You are a helpful assistant"},
-        {"role": "user", "content": "Hello"},
-    ],
-    stream=False
-)
-
-print(response.choices[0].message.content)
-
-# 文件路径: ./test/test_mininet.py
-from mininet.net import Mininet
-from mininet.node import RemoteController
-from mininet.cli import CLI
-from mininet.log import setLogLevel
-
-def test_network():
-    setLogLevel('info')
-
-    net = Mininet(controller=RemoteController)
-
-    # 添加远程控制器，IP和端口根据你的环境调整
-    c0 = net.addController('c0', controller=RemoteController, ip='127.0.0.1', port=6633)
-
-    # 添加主机和交换机
-    h1 = net.addHost('h1')
-    h2 = net.addHost('h2')
-    s1 = net.addSwitch('s1')
-
-    # 链接主机和交换机
-    net.addLink(h1, s1)
-    net.addLink(h2, s1)
-
-    net.start()
-
-    print("\n*** 测试所有主机之间的连通性 ***")
-    net.pingAll()
-
-    print("\n*** 进入Mininet命令行界面，可以执行命令 ***")
-    CLI(net)
-
-    net.stop()
-
-if __name__ == '__main__':
-    test_network()
 
 
 # 文件路径: ./frontend/templates/index.html

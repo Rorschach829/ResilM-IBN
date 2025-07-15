@@ -8,10 +8,13 @@ from ryu_app.auto_generate_path_intents import build_and_send_all_path_intents
 from backend.net_simulation import net_bridge
 from backend.utils.logger import start_new_intent_log, log_intent
 from backend.net_simulation.mininet_manager import stop_topology
-
+import mininet.log
+from contextlib import redirect_stdout
+import sys
 import time
 import re
 import os
+import io
 
 # 在执行link_up的恢复网络操作时，跳过以下actions
 SKIP_ACTIONS_ON_RECOVERY = {
@@ -332,8 +335,35 @@ def execute_instruction(instruction: dict) -> str:
         except Exception as e:
             return f"❌ 取消限速失败: {e}"
 
-    else:
-        return f"❌ 未识别的指令类型: {action}"
+    elif action == "ping_all":
+        if not mm.global_net:
+            return "❌ 当前没有拓扑"
+
+        try:
+            net = mm.global_net
+            hosts = net.hosts
+            output_lines = ["*** Ping: testing ping reachability"]
+
+            for src in hosts:
+                line = f"{src.name} -> "
+                results = []
+                for dst in hosts:
+                    if src == dst:
+                        continue
+                    result = src.cmd(f"ping -c1 -W1 {dst.IP()}")
+                    if "1 packets transmitted, 1 received" in result or "0% packet loss" in result:
+                        results.append(dst.name)
+                    else:
+                        results.append("X")
+                line += " ".join(results)
+                output_lines.append(line)
+
+            output = "\n".join(output_lines)
+            return f"✅ 全部主机连通性测试完成\n{output.strip()}"
+
+        except Exception as e:
+            return f"❌ ping_all 执行失败: {e}"
+
 
 def wait_for_all_hosts(expected=9, timeout=10):
     import requests
