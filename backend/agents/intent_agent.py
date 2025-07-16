@@ -64,7 +64,12 @@ class IntentAgent:
         # 尝试解析JSON，如果失败，抛异常提醒调试
         try:
             json_data = json.loads(content)
+            if isinstance(json_data, dict):
+                return [json_data]  # 单指令包装成列表
+            elif isinstance(json_data, list):
+                return json_data  # 多指令
+            else:
+                raise Exception("返回内容既不是 JSON 对象也不是数组")
         except json.JSONDecodeError as e:
             raise Exception(f"LLM 返回内容不是有效JSON: {e}\n内容:\n{content}")
 
-        return json_data

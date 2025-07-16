@@ -116,14 +116,21 @@
             text += `❌ 错误: ${data.error}\n时间: ${now}\n\n`;
             inputs[i].style.backgroundColor = "#fdd";
           } else {
-            const resultText = typeof data.output === 'object' && data.output?.interpretation
-              ? data.output.interpretation
-              : data.output;
+            let resultText = "";
 
-            console.log("🧪 后端返回：", resultText);  // 用于调试
-            console.log("[前端 DEBUG] 后端返回 output:", resultText);
+            if (Array.isArray(data.output)) {
+              resultText = data.output.map((item, idx) => {
+                return `🔹 [第 ${idx + 1} 条指令]\n类型: ${item.action}\n结果:\n${item.result}`;
+              }).join("\n\n");
+            } else {
+              // fallback，兼容旧结构
+              resultText = typeof data.output === 'object' && data.output?.interpretation
+                ? data.output.interpretation
+                : data.output;
+            }
 
-            text += `类型: ${data.instruction.action}\n结果:\n${resultText}\n时间: ${now}\n\n`;
+text += `${resultText}\n🕒 时间: ${now}\n\n`;
+
             inputs[i].style.backgroundColor = "#d2f8d2";
 
             if (["create_topology", "install_flowtable"].includes(data.instruction.action)) {

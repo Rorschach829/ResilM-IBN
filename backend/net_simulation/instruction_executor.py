@@ -8,7 +8,7 @@ from ryu_app.auto_generate_path_intents import build_and_send_all_path_intents
 from backend.net_simulation import net_bridge
 from backend.utils.logger import start_new_intent_log, log_intent
 from backend.net_simulation.mininet_manager import stop_topology
-from backend.utils.topology_utils import ping_pairs_multi_thread_safe, ping_pairs_single_thread
+# from backend.utils.topology_utils import ping_pairs_multi_thread_safe, ping_pairs_single_thread
 import mininet.log
 from contextlib import redirect_stdout
 import sys
@@ -339,11 +339,13 @@ def execute_instruction(instruction: dict) -> str:
         net = mm.global_net
         try:
             print("=== 多线程双向ping_all测试===")
-            res2 = ping_pairs_multi_thread_safe(net)
+            from backend.utils.topology_utils import robust_ping_pairs_multi_thread
 
-            failed_pairs = res2["failed_pairs"]
-            total = res2["total"]
-            success = res2["success"]
+            res = robust_ping_pairs_multi_thread(mm.global_net)
+
+            failed_pairs = res["failed_pairs"]
+            total = res["total"]
+            success = res["success"]
 
             if not failed_pairs:
                 return f"✅ 所有主机均可互相通信，共测试 {total} 对"
@@ -351,7 +353,7 @@ def execute_instruction(instruction: dict) -> str:
                 failed_lines = [f"- {src} → {dst}" for src, dst in failed_pairs]
                 summary = f"✅ 其余 {success} 对主机通信正常"
                 return "❌ 以下主机对无法通信：\n" + "\n".join(failed_lines) + "\n" + summary
-        
+      
         except Exception as e:
             return f"❌ 执行ping_all失败: {e}"
 

@@ -27,23 +27,28 @@ def handle_intent():
         return jsonify({"error": "意图内容不能为空"}), 400
 
     try:
-        instruction = intent_agent.intent_to_instruction(intent_text)
-        print("解析后的指令:", instruction)
-    except Exception as e:
-        return jsonify({"error": f"意图解析失败: {str(e)}"}), 500
+        # 注意：现在是列表（无论一个还是多个）
+        instructions = intent_agent.intent_to_instruction(intent_text)
+        all_outputs = []
 
-    try:
-        output = execute_instruction(instruction)
-        log_intent(intent_text, instruction, output)
+        for instr in instructions:
+            output = execute_instruction(instr)
+            log_intent(intent_text, instr, output)
+            all_outputs.append({
+                "action": instr.get("action"),
+                "result": output
+            })
+
     except Exception as e:
         return jsonify({"error": f"指令执行失败: {str(e)}"}), 500
 
     return jsonify({
-        "message": "✅ 指令执行成功",
-        "instruction": instruction,
-        "output": output,
-        "success": True if not isinstance(output, str) else "error" not in output.lower()
+        "message": "✅ 所有指令执行完成",
+        "instruction": instructions,
+        "output": all_outputs,
+        "success": True
     })
+
 
 # 获取当前拓扑
 @app.route("/topology", methods=["GET"])
