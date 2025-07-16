@@ -7,6 +7,7 @@ from datetime import datetime
 BASE_LOG_DIR = "/data/gjw/Meta-IBN/logs"
 CURRENT_LOG_FILE = None  # 🆕 当前正在记录的文件路径（每次创建拓扑会更新它）
 
+# backend/utils/logger.py
 def start_new_intent_log():
     global CURRENT_LOG_FILE
     now = datetime.now()
@@ -15,7 +16,24 @@ def start_new_intent_log():
     full_path = os.path.join(BASE_LOG_DIR, file_name)
     os.makedirs(BASE_LOG_DIR, exist_ok=True)
     CURRENT_LOG_FILE = full_path
+
+    # ✅ 写入临时文件，供后续 link_up 用
+    with open("/data/gjw/Meta-IBN/tmp/intent_log_path.txt", "w") as f:
+        f.write(CURRENT_LOG_FILE)
+
     return CURRENT_LOG_FILE
+
+def get_latest_log_file():
+    global CURRENT_LOG_FILE
+    if CURRENT_LOG_FILE:
+        return CURRENT_LOG_FILE
+    try:
+        with open("/tmp/intent_log_path.txt", "r") as f:
+            CURRENT_LOG_FILE = f.read().strip()
+            return CURRENT_LOG_FILE
+    except Exception:
+        return None
+
 
 def log_intent(intent_text: str, instruction: dict, result: str):
     global CURRENT_LOG_FILE

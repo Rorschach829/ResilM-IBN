@@ -101,6 +101,9 @@ def rebuild_topology(intent_json: dict) -> str:
             print(f"[ARP] 已为 {len(hosts_info)} 个主机配置静态 ARP 条目")
 
         global_net = net
+        from backend.net_simulation import net_bridge
+        net_bridge.global_net = net  # ✅ 显式同步到共享空间    
+
         # 执行一次pingPairs
         trigger_controller_learn_hosts(global_net)
         return "✅ 拓扑创建成功"

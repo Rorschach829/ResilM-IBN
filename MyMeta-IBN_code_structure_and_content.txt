@@ -207,23 +207,28 @@ def handle_intent():
         return jsonify({"error": "意图内容不能为空"}), 400
 
     try:
-        instruction = intent_agent.intent_to_instruction(intent_text)
-        print("解析后的指令:", instruction)
-    except Exception as e:
-        return jsonify({"error": f"意图解析失败: {str(e)}"}), 500
+        # 注意：现在是列表（无论一个还是多个）
+        instructions = intent_agent.intent_to_instruction(intent_text)
+        all_outputs = []
 
-    try:
-        output = execute_instruction(instruction)
-        log_intent(intent_text, instruction, output)
+        for instr in instructions:
+            output = execute_instruction(instr)
+            log_intent(intent_text, instr, output)
+            all_outputs.append({
+                "action": instr.get("action"),
+                "result": output
+            })
+
     except Exception as e:
         return jsonify({"error": f"指令执行失败: {str(e)}"}), 500
 
     return jsonify({
-        "message": "✅ 指令执行成功",
-        "instruction": instruction,
-        "output": output,
-        "success": True if not isinstance(output, str) else "error" not in output.lower()
+        "message": "✅ 所有指令执行完成",
+        "instruction": instructions,
+        "output": all_outputs,
+        "success": True
     })
+
 
 # 获取当前拓扑
 @app.route("/topology", methods=["GET"])
@@ -260,7 +265,7 @@ from ryu_app.auto_generate_path_intents import build_and_send_all_path_intents
 from backend.net_simulation import net_bridge
 from backend.utils.logger import start_new_intent_log, log_intent
 from backend.net_simulation.mininet_manager import stop_topology
-from backend.utils.topology_utils import ping_pairs_multi_thread_safe, ping_pairs_single_thread
+# from backend.utils.topology_utils import ping_pairs_multi_thread_safe, ping_pairs_single_thread
 import mininet.log
 from contextlib import redirect_stdout
 import sys
@@ -514,6 +519,32 @@ def execute_instruction(instruction: dict) -> str:
             return f"❌ link_up 执行失败: {e}"
 
 # 对主机限速
+    # elif action == "limit_bandwidth":
+    #     src = instruction.get("src_host")
+    #     dst = instruction.get("dst_host")
+    #     rate = instruction.get("rate_mbps")
+
+    #     if not mm.global_net:
+    #         return "❌ 当前没有拓扑"
+
+    #     src_host = mm.global_net.get(src)
+    #     if not src_host:
+    #         return f"❌ 源主机 {src} 不存在"
+
+    #     # 假设限速从 src 发出的所有流量（对 dst 限速，可拓展为双向限速）
+    #     try:
+    #         dev = src_host.name + "-eth0"
+    #         rate_str = f"{rate}mbit"
+    #         burst = "20kb"
+    #         latency = "70ms"
+    #         cmd = f"tc qdisc add dev {dev} root tbf rate {rate_str} burst {burst} latency {latency}"
+    #         result = src_host.cmd(cmd)
+
+    #         return f"✅ 限速设置成功: {src} → {dst}, 速率限制为 {rate}Mbps\n执行结果:\n{result}"
+    #     except Exception as e:
+    #         return f"❌ 限速失败: {e}"
+
+    # 对主机测速
     elif action == "limit_bandwidth":
         src = instruction.get("src_host")
         dst = instruction.get("dst_host")
@@ -524,18 +555,38 @@ def execute_instruction(instruction: dict) -> str:
 
         src_host = mm.global_net.get(src)
         if not src_host:
-            return f"❌ 源主机 {src} 不存在"
+            return f"❌ 找不到主机 {src}"
 
-        # 假设限速从 src 发出的所有流量（对 dst 限速，可拓展为双向限速）
         try:
-            dev = src_host.name + "-eth0"
+            dev = f"{src}-eth0"
             rate_str = f"{rate}mbit"
-            burst = "20kb"
-            latency = "70ms"
-            cmd = f"tc qdisc add dev {dev} root tbf rate {rate_str} burst {burst} latency {latency}"
-            result = src_host.cmd(cmd)
+            cmds = [f"tc qdisc del dev {dev} root"]
 
-            return f"✅ 限速设置成功: {src} → {dst}, 速率限制为 {rate}Mbps\n执行结果:\n{result}"
+            if dst:
+                dst_host = mm.global_net.get(dst)
+                if not dst_host:
+                    return f"❌ 找不到目标主机 {dst}"
+                dst_ip = dst_host.IP()
+
+                # 单向限速（仅 h1 → h2）
+                cmds += [
+                    f"tc qdisc add dev {dev} root handle 1: htb default 12",
+                    f"tc class add dev {dev} parent 1: classid 1:1 htb rate {rate_str}",
+                    f"tc filter add dev {dev} protocol ip parent 1: prio 1 u32 match ip dst {dst_ip} flowid 1:1"
+                ]
+                result = f"✅ 成功设置单向限速：{src} → {dst} 为 {rate}Mbps"
+            else:
+                # 全局限速（h1 到所有主机都限）
+                cmds += [
+                    f"tc qdisc add dev {dev} root tbf rate {rate_str} burst 20kb latency 70ms"
+                ]
+                result = f"✅ 成功设置全局限速：{src} 发往所有主机为 {rate}Mbps"
+
+            for c in cmds:
+                src_host.cmd(c)
+
+            return result
+
         except Exception as e:
             return f"❌ 限速失败: {e}"
 
@@ -560,7 +611,9 @@ def execute_instruction(instruction: dict) -> str:
 
             # 源主机发起 iperf 的TCP测试
             result = src_host.cmd(f"iperf -c {dst_host.IP()} -t 5")
-            return f"📊 带宽测试结果 (h1 → h2):\n{result}"
+            # return f"📊 带宽测试结果 (h1 → h2):\n{result}"
+            return f"📊 带宽测试结果 ({src} → {dst}):\n{result}"
+
         except Exception as e:
             return f"❌ 带宽测试失败: {e}"
 
@@ -591,11 +644,13 @@ def execute_instruction(instruction: dict) -> str:
         net = mm.global_net
         try:
             print("=== 多线程双向ping_all测试===")
-            res2 = ping_pairs_multi_thread_safe(net)
+            from backend.utils.topology_utils import robust_ping_pairs_multi_thread
 
-            failed_pairs = res2["failed_pairs"]
-            total = res2["total"]
-            success = res2["success"]
+            res = robust_ping_pairs_multi_thread(mm.global_net)
+
+            failed_pairs = res["failed_pairs"]
+            total = res["total"]
+            success = res["success"]
 
             if not failed_pairs:
                 return f"✅ 所有主机均可互相通信，共测试 {total} 对"
@@ -603,7 +658,7 @@ def execute_instruction(instruction: dict) -> str:
                 failed_lines = [f"- {src} → {dst}" for src, dst in failed_pairs]
                 summary = f"✅ 其余 {success} 对主机通信正常"
                 return "❌ 以下主机对无法通信：\n" + "\n".join(failed_lines) + "\n" + summary
-        
+      
         except Exception as e:
             return f"❌ 执行ping_all失败: {e}"
 
@@ -1495,10 +1550,15 @@ class IntentAgent:
         # 尝试解析JSON，如果失败，抛异常提醒调试
         try:
             json_data = json.loads(content)
+            if isinstance(json_data, dict):
+                return [json_data]  # 单指令包装成列表
+            elif isinstance(json_data, list):
+                return json_data  # 多指令
+            else:
+                raise Exception("返回内容既不是 JSON 对象也不是数组")
         except json.JSONDecodeError as e:
             raise Exception(f"LLM 返回内容不是有效JSON: {e}\n内容:\n{content}")
 
-        return json_data
 
 
 # 文件路径: ./backend/agents/prompts/intent_agent.txt
@@ -1593,6 +1653,42 @@ class IntentAgent:
 说明：
 - 用户可能会说“测试全部连通性”、“所有主机 ping 一下”、“检测网络连接状态”、“测试主机间连通性”等，都解析为 ping_all；
 - 输出 JSON 结构只需包含 {{ "action": "ping_all" }}
+
+额外说明：
+- 如果用户的意图中包含多个动作（如创建拓扑并测试连接），请将其拆分为多个 JSON 指令；
+- 多个 JSON 指令请组成一个数组，并只返回该 JSON 数组；
+- 数组中的指令必须严格符合上面的 action 格式，每个对象为一个独立动作。
+
+示例：
+
+用户意图：
+创建一个包含 h1、h2 和 s1 的拓扑，并测试 h1 能否 ping 通 h2
+
+返回：
+[
+  {{
+    "action": "create_topology",
+    "hosts": ["h1", "h2"],
+    "switches": ["s1"],
+    "links": [
+      {{"src": "h1", "dst": "s1"}},
+      {{"src": "h2", "dst": "s1"}}
+    ],
+    "controller": {{
+      "type": "RemoteController",
+      "ip": "127.0.0.1",
+      "port": 6633
+    }}
+  }},
+  {{
+    "action": "ping_test",
+    "hosts": ["h1", "h2"],
+    "extra": {{
+      "source": "h1",
+      "target": "10.0.0.2"
+    }}
+  }}
+]
 
 
 示例：
@@ -1917,7 +2013,118 @@ def ping_once_multi_target(net, timeout=1):
 
 # 多线程双向ping_pairs,建议多使用这个函数
 # 只判断收到的包是否大于等于1，如果大于等于1说明ping通了
-def ping_pairs_multi_thread_safe(net, max_workers=20, batch_size=50):
+# def robust_ping_pairs_multi_thread(net, max_workers=20, batch_size=50, timeout=1):
+#     import threading
+#     import time
+#     import itertools
+#     from concurrent.futures import ThreadPoolExecutor, wait, TimeoutError
+
+#     hosts = net.hosts
+#     total_pairs = list(itertools.permutations(hosts, 2))
+#     total = len(total_pairs)
+#     results = {}
+
+#     host_locks = {host.name: threading.Lock() for host in hosts}
+#     global_lock = threading.Lock()
+
+#     def is_ping_success(output):
+#         return "1 received" in output or "0% packet loss" in output
+
+#     def ping_and_store(src, dst, idx):
+#         try:
+#             src_ip = src.IP()
+#             dst_ip = dst.IP()
+#             if not src_ip or not dst_ip:
+#                 print(f"[SKIP] {src.name} 或 {dst.name} IP 无效")
+#                 return
+
+#             with host_locks[src.name], host_locks[dst.name]:
+#                 result = src.cmd(f"timeout 2 ping -c 1 -W {timeout} {dst_ip}")
+#                 ok = is_ping_success(result)
+#                 with global_lock:
+#                     results[(src.name, dst.name)] = "OK" if ok else "X"
+#                     if not ok:
+#                         print(f"[FAIL] {src.name} → {dst.name} ping 失败")
+#                     if idx % 20 == 0 or idx == total:
+#                         print(f"[进度] 已完成 {idx}/{total} 条 ping")
+#         except Exception as e:
+#             with global_lock:
+#                 print(f"[异常] {src.name} → {dst.name}: {e}")
+#                 results[(src.name, dst.name)] = "ERR"
+
+#     print(f"=== 多线程双向ping_all测试 ===")
+#     print(f"[开始] 共 {total} 对主机 ping 测试，线程池={max_workers}, 每批={batch_size}")
+#     start_time = time.time()
+
+#     for i in range(0, total, batch_size):
+#         with ThreadPoolExecutor(max_workers=max_workers) as executor:
+#             batch = total_pairs[i:i + batch_size]
+#             futures = {
+#                 executor.submit(ping_and_store, src, dst, idx): (src.name, dst.name)
+#                 for idx, (src, dst) in enumerate(batch, start=i + 1)
+#             }
+
+#             done, not_done = wait(futures, timeout=10)
+
+#             for f in done:
+#                 try:
+#                     f.result(timeout=1)
+#                 except Exception as e:
+#                     src_name, dst_name = futures[f]
+#                     print(f"[线程异常] {src_name} → {dst_name} 执行失败: {e}")
+#                     with global_lock:
+#                         results[(src_name, dst_name)] = "ERR"
+
+#             for f in not_done:
+#                 src_name, dst_name = futures[f]
+#                 print(f"[超时] {src_name} → {dst_name} 批处理未完成")
+#                 with global_lock:
+#                     results[(src_name, dst_name)] = "TIMEOUT"
+
+#         time.sleep(0.2)
+
+#     elapsed = time.time() - start_time
+#     print(f"[完成] 所有 ping 测试完成，耗时: {elapsed:.2f} 秒")
+
+#     return {
+#         "total": total,
+#         "success": sum(1 for v in results.values() if v == "OK"),
+#         "failed_pairs": [(src, dst) for (src, dst), v in results.items() if v != "OK"]
+#     }
+
+
+#     print(f"[开始] 共 {total} 对主机进行 ping 测试，线程池大小={max_workers}，每批次={batch_size}")
+#     start_time = time.time()
+
+#     for i in range(0, total, batch_size):
+#         with ThreadPoolExecutor(max_workers=max_workers) as executor:
+#             batch = total_pairs[i:i + batch_size]
+#             futures = {
+#                 executor.submit(ping_and_store, src, dst, idx): (src.name, dst.name)
+#                 for idx, (src, dst) in enumerate(batch, start=i + 1)
+#             }
+
+#             for future in as_completed(futures, timeout=10):
+#                 try:
+#                     future.result(timeout=2)
+#                 except Exception as e:
+#                     src_name, dst_name = futures[future]
+#                     print(f"[线程异常] {src_name} → {dst_name} 线程执行失败: {e}")
+#                     with global_lock:
+#                         results[(src_name, dst_name)] = "ERR"
+
+#         time.sleep(0.2)  # 稍微等一下防止太密集调度
+
+#     elapsed = time.time() - start_time
+#     print(f"[完成] 所有主机对 ping 测试完成，总耗时: {elapsed:.2f} 秒")
+
+#     return {
+#         "total": total,
+#         "success": sum(1 for v in results.values() if v == "OK"),
+#         "failed_pairs": [(src, dst) for (src, dst), v in results.items() if v != "OK"]
+#     }
+
+def robust_ping_pairs_multi_thread(net, max_workers=20, batch_size=50):
     hosts = net.hosts
     total_pairs = list(itertools.permutations(hosts, 2))
     total = len(total_pairs)
@@ -1936,16 +2143,18 @@ def ping_pairs_multi_thread_safe(net, max_workers=20, batch_size=50):
 
     def ping_and_store(src, dst, idx):
         # 使用各自主机的锁
-        with host_locks[src.name], host_locks[dst.name]:
-            result = src.cmd(f"ping -c 1 -W 1 {dst.IP()}")
-            ok = is_ping_success(result)
-            with global_lock:
-                results[(src.name, dst.name)] = "OK" if ok else "X"
-                if not ok:
-                    print(f"[失败] {src.name} → {dst.name} 无法连通")
-                if idx % 50 == 0 or idx == total:
-                    print(f"[进度] 已完成 {idx}/{total} 条 ping 测试")
-
+        try:
+            with host_locks[src.name], host_locks[dst.name]:
+                result = src.cmd(f"ping -c 1 -W 1 {dst.IP()}")
+                ok = is_ping_success(result)
+                with global_lock:
+                    results[(src.name, dst.name)] = "OK" if ok else "X"
+                    if not ok:
+                        print(f"[失败] {src.name} → {dst.name} 无法连通")
+                    if idx % 50 == 0 or idx == total:
+                        print(f"[进度] 已完成 {idx}/{total} 条 ping 测试")
+        except Exception as e:
+            print(f"[线程错误] {src.name} → {dst.name} 执行失败: {e}")
     print(f"[开始] 共 {total} 对主机进行 ping 测试，线程池大小为 {max_workers}，每批次 {batch_size} 条")
     start_time = time.time()
 
@@ -1961,7 +2170,7 @@ def ping_pairs_multi_thread_safe(net, max_workers=20, batch_size=50):
 
     elapsed = time.time() - start_time
     print(f"[完成] 所有主机对 ping 测试已完成，总耗时：{elapsed:.2f} 秒")
-    
+
     return {
         "total": total,
         "success": sum(1 for v in results.values() if v == "OK"),
@@ -1969,34 +2178,6 @@ def ping_pairs_multi_thread_safe(net, max_workers=20, batch_size=50):
     }
 
 
-# def ping_pairs_multi_thread_safe(net, timeout=1):
-#     hosts = net.hosts
-#     results = []
-
-#     def ping_from(src):
-#         line_results = []
-#         for dst in hosts:
-#             if src == dst:
-#                 continue
-            
-#             result = src.cmd(f"ping -c3 -W1 {dst.IP()}")
-#             match = re.search(r"(\d+) packets transmitted, (\d+) received", result)
-#             ok = match and int(match.group(2)) >= 1
-
-#             line_results.append(f"{src.name} -> {dst.name}: {'OK' if ok else 'X'}")
-#         return line_results
-
-    
-#     start = time.time()
-
-#     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-#         futures = [executor.submit(ping_from, src) for src in hosts]
-#         for f in concurrent.futures.as_completed(futures):
-#             results.extend(f.result())
-
-#     end = time.time()
-#     print(f"⚡ 多线程（按主机并发）ping_pairs 耗时: {end - start:.4f} 秒")
-#     return results
 
 
 # 单线程双向ping_pairs
@@ -2256,14 +2437,21 @@ def build_and_send_all_path_intents(net):
             text += `❌ 错误: ${data.error}\n时间: ${now}\n\n`;
             inputs[i].style.backgroundColor = "#fdd";
           } else {
-            const resultText = typeof data.output === 'object' && data.output?.interpretation
-              ? data.output.interpretation
-              : data.output;
+            let resultText = "";
 
-            console.log("🧪 后端返回：", resultText);  // 用于调试
-            console.log("[前端 DEBUG] 后端返回 output:", resultText);
+            if (Array.isArray(data.output)) {
+              resultText = data.output.map((item, idx) => {
+                return `🔹 [第 ${idx + 1} 条指令]\n类型: ${item.action}\n结果:\n${item.result}`;
+              }).join("\n\n");
+            } else {
+              // fallback，兼容旧结构
+              resultText = typeof data.output === 'object' && data.output?.interpretation
+                ? data.output.interpretation
+                : data.output;
+            }
 
-            text += `类型: ${data.instruction.action}\n结果:\n${resultText}\n时间: ${now}\n\n`;
+text += `${resultText}\n🕒 时间: ${now}\n\n`;
+
             inputs[i].style.backgroundColor = "#d2f8d2";
 
             if (["create_topology", "install_flowtable"].includes(data.instruction.action)) {

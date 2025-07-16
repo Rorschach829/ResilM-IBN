@@ -8,7 +8,6 @@ from ryu_app.auto_generate_path_intents import build_and_send_all_path_intents
 from backend.net_simulation import net_bridge
 from backend.utils.logger import start_new_intent_log, log_intent
 from backend.net_simulation.mininet_manager import stop_topology
-# from backend.utils.topology_utils import ping_pairs_multi_thread_safe, ping_pairs_single_thread
 import mininet.log
 from contextlib import redirect_stdout
 import sys
@@ -17,6 +16,10 @@ import re
 import os
 import io
 import traceback
+
+from backend.agents.topology_agent import TopologyAgent
+# 引入TopologyAgent
+topology_agent = TopologyAgent()
 
 # 在执行link_up的恢复网络操作时，跳过以下actions
 SKIP_ACTIONS_ON_RECOVERY = {
@@ -38,30 +41,13 @@ def execute_instruction(instruction: dict) -> str:
     action = instruction.get("action")
 
     if action == "create_topology":
-        
-        # 当创建新拓扑的时候，新建json记录文件
-        start_new_intent_log()
-
-        # ✅ 清空 controller 注册状态，防止重复注册主机
-        from backend.controller import controller_instance
-        controller = controller_instance.get_controller_instance()
-        result = mm.rebuild_topology(instruction)
-
-        net_bridge.global_net = mm.global_net
-        print("[DEBUG] mm module ID:", id(mm))
-        print(f"[DEBUG] 拓扑创建结果: {result}")
-
-        net = mm.global_net
-
-        if net:
-            expected_hosts = len(net.hosts)
-            if wait_for_all_hosts(expected=expected_hosts, timeout=15):
-                build_and_send_all_path_intents(net)
-                print("[INTENT] 路径流表下发完成 ✅")
-            else:
-                print(f"[INTENT] ❌ 等待超时，期望注册 {expected_hosts} 台主机，实际不足")
-
-        return result
+        return topology_agent.create_topology(instruction)
+    elif action == "shutdown_topology":
+        return topology_agent.shutdown_topology()
+    elif action == "link_down":
+        return topology_agent.link_down(instruction)
+    elif action == "link_up":
+        return topology_agent.link_up(instruction)
 
     elif action == "install_flowtable":
         flow_rule = {
@@ -166,14 +152,6 @@ def execute_instruction(instruction: dict) -> str:
 
         return "\n\n".join(results)
 
-
-    elif action == "shutdown_topology":
-        if mm.global_net:
-            mm.global_net.stop()
-            mm.global_net.delete()
-            mm.global_net = None
-        return "✅ 拓扑已关闭"
-
     elif action == "delete_host":
         if not mm.global_net:
             return "❌ 当前没有拓扑"
@@ -184,110 +162,7 @@ def execute_instruction(instruction: dict) -> str:
         mm.global_net.delNode(node)
         return f"✅ 已删除节点 {target}"
     
-    # 断开链路
-    elif action == "link_down":
-        print("[DEBUG] Flask 正准备调用 Ryu 的 /intent/link_down 接口")
-        # ✅ 在 link_down 前注入 global_net 给 Ryu 控制器
-        from backend.controller import controller_instance
-        ryu_controller = controller_instance.get_controller_instance()
-        if ryu_controller:
-            ryu_controller.mininet_net = net_bridge.global_net
-            print("[DEBUG] 已注入 global_net 到 Ryu 控制器:", id(net_bridge.global_net))
-        try:
-            resp = requests.post(
-                "http://localhost:8081/intent/link_down",
-                json={"link": instruction.get("link", [])},
-                timeout=2
-            )
-            print("[DEBUG] Ryu link_down 接口返回状态:", resp.status_code)
-            if resp.status_code == 200:
-                return resp.text
-            else:
-                return f"❌ 控制器返回错误: {resp.status_code} - {resp.text}"
-        except Exception as e:
-            return f"❌ 无法连接控制器 REST 接口: {e}"
-
-# 恢复链路，原理是恢复当前的网络操作并且跳过link_down
-    elif action == "link_up":
-        from backend.utils.logger import CURRENT_LOG_FILE
-        if not CURRENT_LOG_FILE or not os.path.exists(CURRENT_LOG_FILE):
-            return "❌ 当前 session 没有找到日志文件，无法执行 link_up"
-
-        try:
-            target_link = instruction.get("link", [])
-            link_variants = [target_link, target_link[::-1]]  # 支持 ["s1", "s2"] 或 ["s2", "s1"]
-
-            # Step 1: 读取所有意图，跳过指定 link_down
-            with open(CURRENT_LOG_FILE, "r", encoding="utf-8") as f:
-                blocks = f.read().split("\n\n")
-                instructions = []
-                for block in blocks:
-                    if not block.strip():
-                        continue
-                    entry = json.loads(block)
-                    instr = entry.get("instruction", {})
-                    if not instr:
-                        continue
-
-                    # 跳过那个断链link_down的操作
-                    if instr.get("action") == "link_down" and instr.get("link") in link_variants:
-                        print(f"[SKIP] 跳过断链: {instr['link']}")
-                        continue
-
-                    # 跳过无副作用动作
-                    if instr.get("action") in SKIP_ACTIONS_ON_RECOVERY:
-                        print(f"[SKIP] 跳过无副作用动作: {instr['action']}")
-                        continue
-                    
-                    instructions.append(instr)
-
-            # Step 2: 执行重建
-            stop_topology()
-            from backend.controller import controller_instance
-            ctl = controller_instance.get_controller_instance()
-            if ctl:
-                ctl.reset_state()
-            else:
-                print("[WARN] 获取 PathIntentController 实例失败，无法清空控制器状态")
-
-            results = []
-            for idx, instr in enumerate(instructions):
-                action = instr.get("action")
-                result = execute_instruction(instr)
-                results.append(f"[REPLAY 回放动作 {idx+1}] [{action}] => {result}")
-
-            return "✅ link_up 完成，已恢复拓扑并保留其他断链操作\n" + "\n".join(results)
-
-        except Exception as e:
-            return f"❌ link_up 执行失败: {e}"
-
-# 对主机限速
-    # elif action == "limit_bandwidth":
-    #     src = instruction.get("src_host")
-    #     dst = instruction.get("dst_host")
-    #     rate = instruction.get("rate_mbps")
-
-    #     if not mm.global_net:
-    #         return "❌ 当前没有拓扑"
-
-    #     src_host = mm.global_net.get(src)
-    #     if not src_host:
-    #         return f"❌ 源主机 {src} 不存在"
-
-    #     # 假设限速从 src 发出的所有流量（对 dst 限速，可拓展为双向限速）
-    #     try:
-    #         dev = src_host.name + "-eth0"
-    #         rate_str = f"{rate}mbit"
-    #         burst = "20kb"
-    #         latency = "70ms"
-    #         cmd = f"tc qdisc add dev {dev} root tbf rate {rate_str} burst {burst} latency {latency}"
-    #         result = src_host.cmd(cmd)
-
-    #         return f"✅ 限速设置成功: {src} → {dst}, 速率限制为 {rate}Mbps\n执行结果:\n{result}"
-    #     except Exception as e:
-    #         return f"❌ 限速失败: {e}"
-
-    # 对主机测速
+    # 对主机限速
     elif action == "limit_bandwidth":
         src = instruction.get("src_host")
         dst = instruction.get("dst_host")

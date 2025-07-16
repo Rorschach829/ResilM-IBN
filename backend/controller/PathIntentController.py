@@ -8,6 +8,8 @@ from ryu.topology.api import get_switch, get_link
 from ryu.app.wsgi import ControllerBase, WSGIApplication, route
 from ryu.controller import dpset
 from webob import Response
+# from backend.net_simulation import net_bridge
+
 import networkx as nx
 import json
 import traceback
@@ -128,11 +130,6 @@ class PathIntentController(app_manager.RyuApp):
             else:
                 self.logger.debug(f"[主机重复学习] 已存在 {src_mac}，忽略新位置 dpid={dpid}, port={in_port}")
                 return
-
-        # 控制最大主机注册数（调试用）
-        # if len(self.hosts) > 100:
-        #     self.logger.warning(f"[警告] 主机数量异常: 当前 {len(self.hosts)}，可能存在伪主机")
-        #     return
 
         # 注册主机
         self.logger.info(f"✅ 注册新主机: {src_mac} (dpid={dpid}, port={in_port}, ip={src_ip})")
@@ -308,11 +305,17 @@ class PathIntentController(app_manager.RyuApp):
     
         # 断开链路，NetworkX图和Mininet同步
     def link_down(self, src_switch: str, dst_switch: str):
+        from backend.net_simulation import net_bridge  # 确保你引入了
+
         self.logger.info("以下消息由link_down方法输出")
         self.logger.debug(f"当前 NetworkX 图边数量: {self.net.number_of_edges()}")
 
-        mininet_net = self.mininet_net
-        print("[DEBUG] 使用注入的 mininet_net:", id(mininet_net))
+        net = net_bridge.global_net  # ✅ 最优解：直接从共享全局变量中读取
+        print("[RYU] net_bridge.global_net id:", id(net_bridge.global_net))
+
+        if not net:
+            print("⚠️[RYU] Mininet 实例未创建，跳过实际断链")
+            return "Mininet not ready"
 
         try:
             self.logger.info(f"🚧 准备断开链路: {src_switch} ↔ {dst_switch}")
@@ -325,28 +328,25 @@ class PathIntentController(app_manager.RyuApp):
                 self.logger.warning(f"⚠️ 拓扑图中未找到边: {src_switch} ↔ {dst_switch}")
 
             # 2. 真正断开 Mininet 中链路
-            if mininet_net:
-                link = mininet_net.linksBetween(
-                    mininet_net.get(src_switch),
-                    mininet_net.get(dst_switch)
-                )
-                if link:
-                    link_obj = link[0]
-                    link_obj.intf1.ifconfig('down')
-                    link_obj.intf2.ifconfig('down')
-                    self.logger.info(f"✅ Mininet 中链路已禁用: {src_switch} ↔ {dst_switch}")
-                    # ✅ 从 mininet 中彻底移除该 link
-                    if link_obj in mininet_net.links:
-                        mininet_net.links.remove(link_obj)
-                        self.logger.info(f"🧹 Mininet 中 link 对象已移除")
-                else:
-                    self.logger.warning(f"⚠️ Mininet 中未找到链路: {src_switch} ↔ {dst_switch}")
+            link = net.linksBetween(
+                net.get(src_switch),
+                net.get(dst_switch)
+            )
+            if link:
+                link_obj = link[0]
+                link_obj.intf1.ifconfig('down')
+                link_obj.intf2.ifconfig('down')
+                self.logger.info(f"✅ Mininet 中链路已禁用: {src_switch} ↔ {dst_switch}")
+                if link_obj in net.links:
+                    net.links.remove(link_obj)
+                    self.logger.info(f"🧹 Mininet 中 link 对象已移除")
             else:
-                self.logger.warning("⚠️ Mininet 实例未创建，跳过实际断链")
+                self.logger.warning(f"⚠️ Mininet 中未找到链路: {src_switch} ↔ {dst_switch}")
 
         except Exception as e:
             self.logger.error(f"❌ 链路断开失败: {e}")
             self.logger.error(traceback.format_exc())
+
 
     # 重置控制器状态
     def reset_state(self):
