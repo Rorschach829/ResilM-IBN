@@ -23,6 +23,7 @@ class IntentAgent:
         """
         template = self.load_prompt_template()
         return template.format(intent_text=intent_text)
+        
     def intent_to_instruction(self, intent_text: str) -> dict:
       # 现将response赋值为None，防止调用出错
         response = None
