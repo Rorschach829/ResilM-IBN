@@ -6,6 +6,8 @@ from mininet.util import quietRun
 import networkx as nx
 from concurrent.futures import ThreadPoolExecutor
 import re
+import threading
+import itertools
 
 def trigger_controller_learn_hosts(net):
     print("[INTENT] 正在触发主机之间通信，帮助控制器学习主机...")
@@ -114,36 +116,86 @@ def ping_once_multi_target(net, timeout=1):
 
 # 多线程双向ping_pairs,建议多使用这个函数
 # 只判断收到的包是否大于等于1，如果大于等于1说明ping通了
-def ping_pairs_multi_thread_safe(net, timeout=1):
+def ping_pairs_multi_thread_safe(net, max_workers=20, batch_size=50):
     hosts = net.hosts
-    results = []
+    total_pairs = list(itertools.permutations(hosts, 2))
+    total = len(total_pairs)
+    results = {}
 
-    def ping_from(src):
-        line_results = []
-        for dst in hosts:
-            if src == dst:
-                continue
+    # 每个主机一个锁，避免并发访问
+    host_locks = {host.name: threading.Lock() for host in hosts}
+    global_lock = threading.Lock()
+
+    def is_ping_success(output):
+        if "0 received" in output or "100% packet loss" in output:
+            return False
+        if "Destination Host Unreachable" in output or "Network is unreachable" in output:
+            return False
+        return True
+
+    def ping_and_store(src, dst, idx):
+        # 使用各自主机的锁
+        with host_locks[src.name], host_locks[dst.name]:
+            result = src.cmd(f"ping -c 1 -W 1 {dst.IP()}")
+            ok = is_ping_success(result)
+            with global_lock:
+                results[(src.name, dst.name)] = "OK" if ok else "X"
+                if not ok:
+                    print(f"[失败] {src.name} → {dst.name} 无法连通")
+                if idx % 50 == 0 or idx == total:
+                    print(f"[进度] 已完成 {idx}/{total} 条 ping 测试")
+
+    print(f"[开始] 共 {total} 对主机进行 ping 测试，线程池大小为 {max_workers}，每批次 {batch_size} 条")
+    start_time = time.time()
+
+    for i in range(0, total, batch_size):
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            batch = total_pairs[i:i+batch_size]
+            futures = []
+            for idx, (src, dst) in enumerate(batch, start=i+1):
+                futures.append(executor.submit(ping_and_store, src, dst, idx))
+            for future in futures:
+                future.result()
+        time.sleep(0.5)
+
+    elapsed = time.time() - start_time
+    print(f"[完成] 所有主机对 ping 测试已完成，总耗时：{elapsed:.2f} 秒")
+    
+    return {
+        "total": total,
+        "success": sum(1 for v in results.values() if v == "OK"),
+        "failed_pairs": [(src, dst) for (src, dst), v in results.items() if v != "OK"]
+    }
+
+
+# def ping_pairs_multi_thread_safe(net, timeout=1):
+#     hosts = net.hosts
+#     results = []
+
+#     def ping_from(src):
+#         line_results = []
+#         for dst in hosts:
+#             if src == dst:
+#                 continue
             
-            result = src.cmd(f"ping -c3 -W1 {dst.IP()}")
-            match = re.search(r"(\d+) packets transmitted, (\d+) received", result)
-            ok = match and int(match.group(2)) >= 1
+#             result = src.cmd(f"ping -c3 -W1 {dst.IP()}")
+#             match = re.search(r"(\d+) packets transmitted, (\d+) received", result)
+#             ok = match and int(match.group(2)) >= 1
 
-            # result = src.cmd(f"ping -c1 -W{timeout} {dst.IP()}")
-            # ok = "1 packets transmitted, 1 received" in result or "0% packet loss" in result
-            line_results.append(f"{src.name} -> {dst.name}: {'OK' if ok else 'X'}")
-        return line_results
+#             line_results.append(f"{src.name} -> {dst.name}: {'OK' if ok else 'X'}")
+#         return line_results
 
     
-    start = time.time()
+#     start = time.time()
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-        futures = [executor.submit(ping_from, src) for src in hosts]
-        for f in concurrent.futures.as_completed(futures):
-            results.extend(f.result())
+#     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+#         futures = [executor.submit(ping_from, src) for src in hosts]
+#         for f in concurrent.futures.as_completed(futures):
+#             results.extend(f.result())
 
-    end = time.time()
-    print(f"⚡ 多线程（按主机并发）ping_pairs 耗时: {end - start:.4f} 秒")
-    return results
+#     end = time.time()
+#     print(f"⚡ 多线程（按主机并发）ping_pairs 耗时: {end - start:.4f} 秒")
+#     return results
 
 
 # 单线程双向ping_pairs

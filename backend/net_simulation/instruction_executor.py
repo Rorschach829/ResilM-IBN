@@ -341,14 +341,20 @@ def execute_instruction(instruction: dict) -> str:
             print("=== 多线程双向ping_all测试===")
             res2 = ping_pairs_multi_thread_safe(net)
 
-            failed = [line for line in res2 if ": X" in line]
-            if not failed:
-                return "✅ 所有主机均可互相通信！"
-            else:
-                return "❌ 存在不可达主机对：\n" + "\n".join(failed)
+            failed_pairs = res2["failed_pairs"]
+            total = res2["total"]
+            success = res2["success"]
 
+            if not failed_pairs:
+                return f"✅ 所有主机均可互相通信，共测试 {total} 对"
+            else:
+                failed_lines = [f"- {src} → {dst}" for src, dst in failed_pairs]
+                summary = f"✅ 其余 {success} 对主机通信正常"
+                return "❌ 以下主机对无法通信：\n" + "\n".join(failed_lines) + "\n" + summary
+        
         except Exception as e:
-            return f"❌ pingAll 执行失败: {e}\n{traceback.format_exc()}"
+            return f"❌ 执行ping_all失败: {e}"
+
 
 
 def wait_for_all_hosts(expected=9, timeout=10):
