@@ -5,7 +5,7 @@ import requests
 from mininet.util import quietRun
 import networkx as nx
 from concurrent.futures import ThreadPoolExecutor
-
+import re
 
 def trigger_controller_learn_hosts(net):
     print("[INTENT] 正在触发主机之间通信，帮助控制器学习主机...")
@@ -113,6 +113,7 @@ def ping_once_multi_target(net, timeout=1):
 
 
 # 多线程双向ping_pairs,建议多使用这个函数
+# 只判断收到的包是否大于等于1，如果大于等于1说明ping通了
 def ping_pairs_multi_thread_safe(net, timeout=1):
     hosts = net.hosts
     results = []
@@ -122,8 +123,13 @@ def ping_pairs_multi_thread_safe(net, timeout=1):
         for dst in hosts:
             if src == dst:
                 continue
-            result = src.cmd(f"ping -c1 -W{timeout} {dst.IP()}")
-            ok = "1 packets transmitted, 1 received" in result or "0% packet loss" in result
+            
+            result = src.cmd(f"ping -c3 -W1 {dst.IP()}")
+            match = re.search(r"(\d+) packets transmitted, (\d+) received", result)
+            ok = match and int(match.group(2)) >= 1
+
+            # result = src.cmd(f"ping -c1 -W{timeout} {dst.IP()}")
+            # ok = "1 packets transmitted, 1 received" in result or "0% packet loss" in result
             line_results.append(f"{src.name} -> {dst.name}: {'OK' if ok else 'X'}")
         return line_results
 

@@ -46,7 +46,7 @@ def execute_instruction(instruction: dict) -> str:
         from backend.controller import controller_instance
         controller = controller_instance.get_controller_instance()
         result = mm.rebuild_topology(instruction)
-        
+
         net_bridge.global_net = mm.global_net
         print("[DEBUG] mm module ID:", id(mm))
         print(f"[DEBUG] 拓扑创建结果: {result}")
@@ -338,15 +338,14 @@ def execute_instruction(instruction: dict) -> str:
             return "❌ 当前没有拓扑"
         net = mm.global_net
         try:
-            # 暂时不用单线程
-            # print("=== 单线程 ===")
-            # res1 = ping_pairs_single_thread(net)
-            # print("\n".join(res1))
-
-            print("=== 多线程双向ping_pairs测试===")
+            print("=== 多线程双向ping_all测试===")
             res2 = ping_pairs_multi_thread_safe(net)
-            output = "\n".join(res2)
-            return f"✅ 全部主机连通性测试完成（多线程）\n{output}"
+
+            failed = [line for line in res2 if ": X" in line]
+            if not failed:
+                return "✅ 所有主机均可互相通信！"
+            else:
+                return "❌ 存在不可达主机对：\n" + "\n".join(failed)
 
         except Exception as e:
             return f"❌ pingAll 执行失败: {e}\n{traceback.format_exc()}"
