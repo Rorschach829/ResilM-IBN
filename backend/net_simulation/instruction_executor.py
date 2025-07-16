@@ -16,10 +16,13 @@ import re
 import os
 import io
 import traceback
-
-from backend.agents.topology_agent import TopologyAgent
 # 引入TopologyAgent
+from backend.agents.topology_agent import TopologyAgent
 topology_agent = TopologyAgent()
+
+# 引入FlowAgent
+from backend.agents.flow_agent import FlowAgent
+flow_agent = FlowAgent()
 
 # 在执行link_up的恢复网络操作时，跳过以下actions
 SKIP_ACTIONS_ON_RECOVERY = {
@@ -48,20 +51,12 @@ def execute_instruction(instruction: dict) -> str:
         return topology_agent.link_down(instruction)
     elif action == "link_up":
         return topology_agent.link_up(instruction)
-
     elif action == "install_flowtable":
-        flow_rule = {
-            "dpid": 1,  # 默认交换机ID，可扩展支持多个
-            "match": instruction.get("extra", {}).get("match", {}),
-            "actions": [],  # DENY 默认丢弃
-            "priority": instruction.get("extra", {}).get("priority", 100)
-        }
-
-        if instruction.get("extra", {}).get("actions") == "DENY":
-            if send_flow_mod(flow_rule):
-                return f"✅ 流表下发成功 (阻断 {flow_rule['match']})"
-            else:
-                return "❌ 流表下发失败"
+        return flow_agent.install_flowtable(instruction)
+    elif action == "delete_flowtable":
+        return flow_agent.delete_flowtable(instruction)
+    elif action == "get_flowtable":
+        return flow_agent.get_flowtable(instruction)
 
     elif action == "ping_test":
         print(f"[DEBUG] global_net状态: {mm.global_net}")
@@ -99,58 +94,6 @@ def execute_instruction(instruction: dict) -> str:
 
         return f"{src_name} {'可以✅' if success2 else '无法❌'} ping 通 {target_host or target_ip}\n{result2}"
 
-
-    elif action == "delete_flowtable":
-        switches = instruction.get("switches", [])
-
-        # 支持 match 字段既可能在 extra 中，也可能在顶层
-        extra = instruction.get("extra", {})
-        match = extra.get("match") or instruction.get("match", {})
-
-        if not switches:
-            return "❌ 错误：未指定交换机"
-
-        for sw in switches:
-            if sw == "all":
-                # 查询所有交换机 ID
-                sw_list = get_all_switch_ids()
-            else:
-                sw_list = [int(sw.replace("s", ""))]
-
-            for dpid in sw_list:
-                payload = {
-                    "dpid": dpid,
-                    "match": match
-                }
-                try:
-                    resp = requests.post("http://localhost:8081/stats/flowentry/delete", json=payload)
-                    if resp.status_code != 200:
-                        return f"❌ 删除流表失败，交换机 {dpid} 返回码 {resp.status_code}"
-                except Exception as e:
-                    return f"❌ 删除流表失败: {e}"
-
-        return "✅ 流表删除成功"
-
-    elif action == "get_flowtable":
-        switches = instruction.get("switches", [])
-        results = []
-
-        for sw in switches:
-            dpid = convert_switch_name_to_dpid(sw)
-            url = f"http://localhost:8081/stats/flow/{dpid}"
-            print("[DEBUG] 请求 URL:", url)
-            try:
-                resp = requests.get(url)
-                if resp.status_code == 200:
-                    flows = resp.json().get(str(dpid), [])
-                    formatted = json.dumps(flows, indent=2, ensure_ascii=False)
-                    results.append(f"✅ 交换机 {sw} 当前流表:\n{formatted}")
-                else:
-                    results.append(f"❌ 无法获取交换机 {sw} 的流表")
-            except Exception as e:
-                results.append(f"❌ 请求失败: {e}")
-
-        return "\n\n".join(results)
 
     elif action == "delete_host":
         if not mm.global_net:

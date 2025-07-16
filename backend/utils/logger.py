@@ -17,8 +17,12 @@ def start_new_intent_log():
     os.makedirs(BASE_LOG_DIR, exist_ok=True)
     CURRENT_LOG_FILE = full_path
 
+   # ✅ 补充创建 tmp 目录
+    tmp_dir = "/data/gjw/Meta-IBN/tmp"
+    os.makedirs(tmp_dir, exist_ok=True)
+
     # ✅ 写入临时文件，供后续 link_up 用
-    with open("/data/gjw/Meta-IBN/tmp/intent_log_path.txt", "w") as f:
+    with open(os.path.join(tmp_dir, "intent_log_path.txt"), "w") as f:
         f.write(CURRENT_LOG_FILE)
 
     return CURRENT_LOG_FILE
