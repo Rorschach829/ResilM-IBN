@@ -262,6 +262,32 @@ def execute_instruction(instruction: dict) -> str:
             return f"❌ link_up 执行失败: {e}"
 
 # 对主机限速
+    # elif action == "limit_bandwidth":
+    #     src = instruction.get("src_host")
+    #     dst = instruction.get("dst_host")
+    #     rate = instruction.get("rate_mbps")
+
+    #     if not mm.global_net:
+    #         return "❌ 当前没有拓扑"
+
+    #     src_host = mm.global_net.get(src)
+    #     if not src_host:
+    #         return f"❌ 源主机 {src} 不存在"
+
+    #     # 假设限速从 src 发出的所有流量（对 dst 限速，可拓展为双向限速）
+    #     try:
+    #         dev = src_host.name + "-eth0"
+    #         rate_str = f"{rate}mbit"
+    #         burst = "20kb"
+    #         latency = "70ms"
+    #         cmd = f"tc qdisc add dev {dev} root tbf rate {rate_str} burst {burst} latency {latency}"
+    #         result = src_host.cmd(cmd)
+
+    #         return f"✅ 限速设置成功: {src} → {dst}, 速率限制为 {rate}Mbps\n执行结果:\n{result}"
+    #     except Exception as e:
+    #         return f"❌ 限速失败: {e}"
+
+    # 对主机测速
     elif action == "limit_bandwidth":
         src = instruction.get("src_host")
         dst = instruction.get("dst_host")
@@ -272,18 +298,38 @@ def execute_instruction(instruction: dict) -> str:
 
         src_host = mm.global_net.get(src)
         if not src_host:
-            return f"❌ 源主机 {src} 不存在"
+            return f"❌ 找不到主机 {src}"
 
-        # 假设限速从 src 发出的所有流量（对 dst 限速，可拓展为双向限速）
         try:
-            dev = src_host.name + "-eth0"
+            dev = f"{src}-eth0"
             rate_str = f"{rate}mbit"
-            burst = "20kb"
-            latency = "70ms"
-            cmd = f"tc qdisc add dev {dev} root tbf rate {rate_str} burst {burst} latency {latency}"
-            result = src_host.cmd(cmd)
+            cmds = [f"tc qdisc del dev {dev} root"]
 
-            return f"✅ 限速设置成功: {src} → {dst}, 速率限制为 {rate}Mbps\n执行结果:\n{result}"
+            if dst:
+                dst_host = mm.global_net.get(dst)
+                if not dst_host:
+                    return f"❌ 找不到目标主机 {dst}"
+                dst_ip = dst_host.IP()
+
+                # 单向限速（仅 h1 → h2）
+                cmds += [
+                    f"tc qdisc add dev {dev} root handle 1: htb default 12",
+                    f"tc class add dev {dev} parent 1: classid 1:1 htb rate {rate_str}",
+                    f"tc filter add dev {dev} protocol ip parent 1: prio 1 u32 match ip dst {dst_ip} flowid 1:1"
+                ]
+                result = f"✅ 成功设置单向限速：{src} → {dst} 为 {rate}Mbps"
+            else:
+                # 全局限速（h1 到所有主机都限）
+                cmds += [
+                    f"tc qdisc add dev {dev} root tbf rate {rate_str} burst 20kb latency 70ms"
+                ]
+                result = f"✅ 成功设置全局限速：{src} 发往所有主机为 {rate}Mbps"
+
+            for c in cmds:
+                src_host.cmd(c)
+
+            return result
+
         except Exception as e:
             return f"❌ 限速失败: {e}"
 
@@ -308,7 +354,9 @@ def execute_instruction(instruction: dict) -> str:
 
             # 源主机发起 iperf 的TCP测试
             result = src_host.cmd(f"iperf -c {dst_host.IP()} -t 5")
-            return f"📊 带宽测试结果 (h1 → h2):\n{result}"
+            # return f"📊 带宽测试结果 (h1 → h2):\n{result}"
+            return f"📊 带宽测试结果 ({src} → {dst}):\n{result}"
+
         except Exception as e:
             return f"❌ 带宽测试失败: {e}"
 
