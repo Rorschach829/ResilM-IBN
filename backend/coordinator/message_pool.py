@@ -21,4 +21,6 @@ class MessagePool:
                 if handled:
                     break  # 一旦有 agent 成功处理，就不继续广播
             except Exception as e:
-                print(f"[MessagePool] Agent {agent.__class__.__name__} 处理异常: {e}")
+                print(f"[MessagePool] Agent_Name:{agent.__class__.__name__} 处理异常: {e}")
+
+message_pool = MessagePool()

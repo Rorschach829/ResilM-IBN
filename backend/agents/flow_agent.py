@@ -1,5 +1,7 @@
 # backend/agents/flow_agent.py (重构版，支持消息池通信)
 from backend.agent_core.flowtable_manager import FlowTableManager
+from backend.net_simulation import mininet_manager as mm
+from backend.utils.topology_utils import get_output_port
 
 class FlowAgent:
     def __init__(self):
@@ -9,6 +11,12 @@ class FlowAgent:
         action = message.get("action")
         
         if action == "install_flowtable":
+            if "triggered_by" in message:
+                print(f"[FlowAgent] 接收到 QAAgent 自动修复意图: {message['triggered_by']}")
+                message["_source_agent"] = "QAAgent"
+            else:
+                message["_source_agent"] = "User"
+
             result = self.manager.install_rule(message)
             message["_result"] = result
             return True

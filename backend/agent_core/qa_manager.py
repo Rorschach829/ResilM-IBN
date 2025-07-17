@@ -2,43 +2,95 @@
 import time
 from backend.net_simulation import mininet_manager as mm
 import re
+from backend.utils.topology_utils import get_path_switches, get_host_ip
+from backend.coordinator.message_pool import message_pool
+from typing import Optional, Tuple
 class QAManager:
-    def ping_test(self, instruction: dict) -> tuple[str, dict or None]:
-        """返回测试结果和失败信息（如果有）"""
+
+    def ping_test(self, instruction: dict) -> Tuple[str, Optional[dict]]:
         print(f"[DEBUG] global_net状态: {mm.global_net}")
         if not mm.global_net:
-            return "❌ 当前没有拓扑 (请先创建拓扑或检查global_net引用)"
+            return "❌ 当前没有拓扑 (请先创建拓扑或检查global_net引用)", None
 
         src_name = instruction.get("extra", {}).get("source") or instruction.get("source")
         target_ip = instruction.get("extra", {}).get("target") or instruction.get("target")
         target_host = instruction.get("extra", {}).get("target_host") or instruction.get("target")
+        expect_result = instruction.get("extra", {}).get("expect_result", None)
+        auto_fix = instruction.get("extra", {}).get("auto_fix", False)
 
         if not src_name or not target_ip:
-            return "❌ 指令缺少 source 或 target"
+            return "❌ 指令缺少 source 或 target", None
 
         src_host = mm.global_net.get(src_name)
         if not src_host:
-            return f"❌ 主机 {src_name} 不存在"
+            return f"❌ 主机 {src_name} 不存在", None
 
-        # 发送3个包，有一个包收到了就说明Ping通了
         print(f"[PING] 第一次尝试: {src_name} -> {target_ip}")
-        result1 = src_host.cmd(f"ping -c 3 -W 1 {target_ip}")
+        result1 = src_host.cmd("ping -c 3 -W 1 %s" % target_ip)
         match1 = re.search(r"(\d+) packets transmitted, (\d+) received", result1)
         success1 = match1 and int(match1.group(2)) >= 1
 
         if success1:
-            return f"{src_name} 可以✅ ping 通 {target_host or target_ip}\n{result1}", None
+            return "%s 可以✅ ping 通 %s\n%s" % (src_name, target_host or target_ip, result1), None
 
-        # 等待5秒控制器可能下发流表
-        print(f"[PING] 第一次失败，等待 5 秒后重试...")
+        print("[PING] 第一次失败，等待 5 秒后重试...")
         time.sleep(5)
 
         print(f"[PING] 第二次尝试: {src_name} -> {target_ip}")
-        result2 = src_host.cmd(f"ping -c 3 -W 1 {target_ip}")
+        result2 = src_host.cmd("ping -c 3 -W 1 %s" % target_ip)
         match2 = re.search(r"(\d+) packets transmitted, (\d+) received", result2)
         success2 = match2 and int(match2.group(2)) >= 1
 
-        return f"{src_name} {'可以✅' if success2 else '无法❌'} ping 通 {target_host or target_ip}\n{result2}"
+        final_result = "%s %s ping 通 %s\n%s" % (
+            src_name, "可以✅" if success2 else "无法❌", target_host or target_ip, result2)
+
+        # ✅ 判断是否要自动修复
+        if (not success2) and expect_result == "success" and auto_fix:
+            print("[QAAgent] ping 失败，触发自动修复链")
+
+            src_ip = get_host_ip(src_name)
+            switches = get_path_switches(src_name, target_ip)
+            match_fields = {
+                "dl_type": 2048,
+                "nw_src": src_ip,
+                "nw_dst": target_ip,
+                "nw_proto": 1
+            }
+
+            # 构造先删除流表的意图
+            delete_intent = {
+                "action": "delete_flowtable",
+                "switches": switches,
+                "match": match_fields
+            }
+
+            # 构造 install_flowtable 意图
+            install_intent = {
+                "action": "install_flowtable",
+                "switches": switches,
+                "extra": {
+                    "match": match_fields,
+                    "actions": "ALLOW",
+                    "priority": 100
+                },
+                "triggered_by": {
+                    "agent": "QAAgent",
+                    "reason": "%s→%s ping failed, auto_fix triggered" % (src_name, target_ip)
+                }
+            }
+
+            # ✅ 先执行删除（可立即推送）
+            print("[QAAgent] 删除原有阻断规则: %s" % delete_intent)
+            from backend.coordinator.message_pool import message_pool
+            print("[qa_manager.py]成功引入消息池message_pool")
+            message_pool.publish(delete_intent)
+
+            # ✅ 然后返回 install_intent 让调用方继续广播
+            return final_result + "\n⚙️ 已触发自动修复（删除 + ALLOW）", install_intent
+
+        return final_result, None
+
+
 
 
     def ping_all(self) -> str:
@@ -98,3 +150,5 @@ class QAManager:
             if h.IP() == ip:
                 return h.name
         return "unknown"
+
+

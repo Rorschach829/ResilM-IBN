@@ -41,8 +41,32 @@
    - hosts: 所涉及主机名列表，如 ["h1", "h2"]
    - extra: {{
        "source": 源主机名，如 "h1",
-       "target": 目标主机 IP 地址，如 "10.0.0.2"
+       "target": 目标主机 IP 地址，如 "10.0.0.2",
+       "expect_result": "success" 或 "fail"，表示用户期望结果（可选）
+       "auto_fix": true 或 false，是否允许自动修复（可选）
      }}
+
+示例 1（用户明确表示期望两主机通信，若不通请修复）：
+{{
+  "action": "ping_test",
+  "hosts": ["h1", "h2"],
+  "extra": {{
+    "source": "h1",
+    "target": "10.0.0.2",
+    "expect_result": "success",
+    "auto_fix": true
+  }}
+}}
+
+示例 2（用户若只是想测试两主机的连通性则输出如下）：
+{{
+  "action": "ping_test",
+  "hosts": ["h1", "h2"],
+  "extra": {{
+    "source": "h1",
+    "target": "10.0.0.2"
+  }}
+}}
 
 5. get_flowtable
    - switches: 要查看的交换机列表,如["s1"]

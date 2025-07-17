@@ -5,10 +5,10 @@ import requests
 from mininet.util import quietRun
 import networkx as nx
 from concurrent.futures import ThreadPoolExecutor
-import re
+from backend.net_simulation import mininet_manager as mm
 import threading
 import itertools
-
+from typing import Optional, Tuple
 def trigger_controller_learn_hosts(net):
     print("[INTENT] 正在触发主机之间通信，帮助控制器学习主机...")
     try:
@@ -43,10 +43,6 @@ def wait_for_stp_convergence(switches_info: dict, timeout: int = 35, interval: i
         waited += interval
     return timeout
 
-# 文件: backend/utils/topology_utils.py
-
-
-
 def build_networkx_graph_from_mininet(net):
     """
     根据 Mininet 拓扑结构构建 NetworkX 图，用于路径计算。
@@ -62,7 +58,6 @@ def build_networkx_graph_from_mininet(net):
         graph.add_edge(name1, name2)
 
     return graph
-
 
 def safe_ping(h1, h2):
     """
@@ -112,120 +107,6 @@ def ping_once_multi_target(net, timeout=1):
     elapsed = round(end - start, 4)
     output_lines.append(f"⏱️ 总耗时: {elapsed} 秒")
     return "\n".join(output_lines)
-
-
-# 多线程双向ping_pairs,建议多使用这个函数
-# 只判断收到的包是否大于等于1，如果大于等于1说明ping通了
-# def robust_ping_pairs_multi_thread(net, max_workers=20, batch_size=50, timeout=1):
-#     import threading
-#     import time
-#     import itertools
-#     from concurrent.futures import ThreadPoolExecutor, wait, TimeoutError
-
-#     hosts = net.hosts
-#     total_pairs = list(itertools.permutations(hosts, 2))
-#     total = len(total_pairs)
-#     results = {}
-
-#     host_locks = {host.name: threading.Lock() for host in hosts}
-#     global_lock = threading.Lock()
-
-#     def is_ping_success(output):
-#         return "1 received" in output or "0% packet loss" in output
-
-#     def ping_and_store(src, dst, idx):
-#         try:
-#             src_ip = src.IP()
-#             dst_ip = dst.IP()
-#             if not src_ip or not dst_ip:
-#                 print(f"[SKIP] {src.name} 或 {dst.name} IP 无效")
-#                 return
-
-#             with host_locks[src.name], host_locks[dst.name]:
-#                 result = src.cmd(f"timeout 2 ping -c 1 -W {timeout} {dst_ip}")
-#                 ok = is_ping_success(result)
-#                 with global_lock:
-#                     results[(src.name, dst.name)] = "OK" if ok else "X"
-#                     if not ok:
-#                         print(f"[FAIL] {src.name} → {dst.name} ping 失败")
-#                     if idx % 20 == 0 or idx == total:
-#                         print(f"[进度] 已完成 {idx}/{total} 条 ping")
-#         except Exception as e:
-#             with global_lock:
-#                 print(f"[异常] {src.name} → {dst.name}: {e}")
-#                 results[(src.name, dst.name)] = "ERR"
-
-#     print(f"=== 多线程双向ping_all测试 ===")
-#     print(f"[开始] 共 {total} 对主机 ping 测试，线程池={max_workers}, 每批={batch_size}")
-#     start_time = time.time()
-
-#     for i in range(0, total, batch_size):
-#         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-#             batch = total_pairs[i:i + batch_size]
-#             futures = {
-#                 executor.submit(ping_and_store, src, dst, idx): (src.name, dst.name)
-#                 for idx, (src, dst) in enumerate(batch, start=i + 1)
-#             }
-
-#             done, not_done = wait(futures, timeout=10)
-
-#             for f in done:
-#                 try:
-#                     f.result(timeout=1)
-#                 except Exception as e:
-#                     src_name, dst_name = futures[f]
-#                     print(f"[线程异常] {src_name} → {dst_name} 执行失败: {e}")
-#                     with global_lock:
-#                         results[(src_name, dst_name)] = "ERR"
-
-#             for f in not_done:
-#                 src_name, dst_name = futures[f]
-#                 print(f"[超时] {src_name} → {dst_name} 批处理未完成")
-#                 with global_lock:
-#                     results[(src_name, dst_name)] = "TIMEOUT"
-
-#         time.sleep(0.2)
-
-#     elapsed = time.time() - start_time
-#     print(f"[完成] 所有 ping 测试完成，耗时: {elapsed:.2f} 秒")
-
-#     return {
-#         "total": total,
-#         "success": sum(1 for v in results.values() if v == "OK"),
-#         "failed_pairs": [(src, dst) for (src, dst), v in results.items() if v != "OK"]
-#     }
-
-
-#     print(f"[开始] 共 {total} 对主机进行 ping 测试，线程池大小={max_workers}，每批次={batch_size}")
-#     start_time = time.time()
-
-#     for i in range(0, total, batch_size):
-#         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-#             batch = total_pairs[i:i + batch_size]
-#             futures = {
-#                 executor.submit(ping_and_store, src, dst, idx): (src.name, dst.name)
-#                 for idx, (src, dst) in enumerate(batch, start=i + 1)
-#             }
-
-#             for future in as_completed(futures, timeout=10):
-#                 try:
-#                     future.result(timeout=2)
-#                 except Exception as e:
-#                     src_name, dst_name = futures[future]
-#                     print(f"[线程异常] {src_name} → {dst_name} 线程执行失败: {e}")
-#                     with global_lock:
-#                         results[(src_name, dst_name)] = "ERR"
-
-#         time.sleep(0.2)  # 稍微等一下防止太密集调度
-
-#     elapsed = time.time() - start_time
-#     print(f"[完成] 所有主机对 ping 测试完成，总耗时: {elapsed:.2f} 秒")
-
-#     return {
-#         "total": total,
-#         "success": sum(1 for v in results.values() if v == "OK"),
-#         "failed_pairs": [(src, dst) for (src, dst), v in results.items() if v != "OK"]
-#     }
 
 def robust_ping_pairs_multi_thread(net, max_workers=20, batch_size=50):
     hosts = net.hosts
@@ -333,3 +214,82 @@ def fast_host_activation(net, timeout=1):
     elapsed = round(end - start, 4)
     output_lines.append(f"⏱️ 并发唤醒完成，耗时: {elapsed} 秒")
     return "\n".join(output_lines)
+
+# 获取两主机之间的交换机
+def get_path_switches(src_host: str, dst_ip: str) -> list[str]:
+    src = mm.global_net.get(src_host)
+    dst = None
+    dst_host = None
+
+    for name, host in mm.global_net.items():
+        if host.IP() == dst_ip:
+            dst = host
+            dst_host = name
+            break
+
+    if not src or not dst:
+        raise ValueError(f"[get_path_switches] 主机未找到: src={src_host}, dst_ip={dst_ip}")
+
+    G = build_networkx_graph_from_mininet(mm.global_net)
+
+    path = nx.shortest_path(G, src_host, dst_host)
+
+    switches = [node for node in path if node.startswith("s")]
+    return switches
+
+
+    # 根据主机名找ip
+def get_host_ip(host_name: str) -> Tuple[str, Optional[dict]]:
+    try:
+        return mm.global_net.get(host_name).IP()
+    except Exception:
+        return None
+
+# backend/utils/topology_utils.py
+
+class TopologyGraph:
+    """
+    基于 networkx 的拓扑图封装
+    节点支持 host、switch，边上携带 port 信息
+    """
+    def __init__(self):
+        self.graph = nx.Graph()
+
+    def add_link(self, node1: str, node2: str, port: int):
+        self.graph.add_edge(node1, node2, port=port)
+
+    def get_shortest_path(self, src: str, dst: str) -> list:
+        return nx.shortest_path(self.graph, source=src, target=dst)
+
+    def get_edge_data(self, node1: str, node2: str) -> dict:
+        return self.graph.get_edge_data(node1, node2)
+
+
+def get_output_port(switch_name: str, dst_ip: str, mm) -> Optional[int]:
+    """
+    获取从 switch_name 出发，前往 dst_ip 的下一跳端口号
+    - mm: 传入 mininet_manager 模块，用于访问 global_net_ip_map 和 graph
+    """
+    dst_host = mm.global_net_ip_map.get(dst_ip)
+    if not dst_host:
+        print(f"[get_output_port] 目标 IP {dst_ip} 无对应主机")
+        return None
+
+    try:
+        path = mm.graph.get_shortest_path(switch_name, dst_host.name)
+    except Exception as e:
+        print(f"[get_output_port] 最短路径获取失败: {e}")
+        return None
+
+    if len(path) < 2:
+        print(f"[get_output_port] path 太短: {path}")
+        return None
+
+    curr, nex = path[0], path[1]
+    edge = mm.graph.get_edge_data(curr, nex)
+    if not edge or "port" not in edge:
+        print(f"[get_output_port] 找不到 {curr} → {nex} 的 port")
+        return None
+
+    return edge["port"]
+

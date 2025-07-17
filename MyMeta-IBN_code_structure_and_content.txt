@@ -181,7 +181,7 @@ if __name__ == '__main__':
 
 
 # 文件路径: ./tmp/intent_log_path.txt
-/data/gjw/Meta-IBN/logs/topo_20250717_111836.jsonl
+/data/gjw/Meta-IBN/logs/topo_20250717_153317.jsonl
 
 # 文件路径: ./backend/__init__.py
 
@@ -1127,6 +1127,12 @@ class FlowAgent:
         action = message.get("action")
         
         if action == "install_flowtable":
+            if "triggered_by" in message:
+                print(f"[FlowAgent] 接收到 QAAgent 自动修复意图: {message['triggered_by']}")
+                message["_source_agent"] = "QAAgent"
+            else:
+                message["_source_agent"] = "User"
+
             result = self.manager.install_rule(message)
             message["_result"] = result
             return True
@@ -1238,7 +1244,6 @@ class IntentAgent:
 # backend/agents/qa_agent.py
 import time
 from backend.agent_core.qa_manager import QAManager
-from backend.coordinator.message_pool import MessagePool  # 引入消息池
 
 class QAAgent:
     def __init__(self):
@@ -1248,16 +1253,11 @@ class QAAgent:
         action = message.get("action")
 
         if action == "ping_test":
-            # result, failed_info = self.manager.ping_test(message)
-            result = self.manager.ping_test(message)
-            message["_result"] = result
-
-            # 如果 ping 失败，自动发起修复请求
-            # if failed_info:
-            #     print("📡 QAAgent 检测失败，触发自动修复指令")
-            #     fix_instr = self.construct_fix_flow(failed_info)
-            #     global_message_pool.publish(fix_instr)
-
+            output, repair_intent = self.manager.ping_test(message)
+            message["_result"] = output
+            if repair_intent:
+                print("[QAAgent] 发布自动修复流表: %s" % repair_intent)
+                message_pool.publish("FlowAgent", repair_intent)
             return True
 
         elif action == "ping_all":
@@ -1372,8 +1372,32 @@ class TopologyAgent:
    - hosts: 所涉及主机名列表，如 ["h1", "h2"]
    - extra: {{
        "source": 源主机名，如 "h1",
-       "target": 目标主机 IP 地址，如 "10.0.0.2"
+       "target": 目标主机 IP 地址，如 "10.0.0.2",
+       "expect_result": "success" 或 "fail"，表示用户期望结果（可选）
+       "auto_fix": true 或 false，是否允许自动修复（可选）
      }}
+
+示例 1（用户明确表示期望两主机通信，若不通请修复）：
+{{
+  "action": "ping_test",
+  "hosts": ["h1", "h2"],
+  "extra": {{
+    "source": "h1",
+    "target": "10.0.0.2",
+    "expect_result": "success",
+    "auto_fix": true
+  }}
+}}
+
+示例 2（用户若只是想测试两主机的连通性则输出如下）：
+{{
+  "action": "ping_test",
+  "hosts": ["h1", "h2"],
+  "extra": {{
+    "source": "h1",
+    "target": "10.0.0.2"
+  }}
+}}
 
 5. get_flowtable
    - switches: 要查看的交换机列表,如["s1"]
@@ -1498,18 +1522,34 @@ from backend.net_simulation.ryu_controller import send_flow_mod
 
 class FlowTableManager:
     def install_rule(self, instruction: dict) -> str:
-        flow_rule = {
-            "dpid": 1,  # 默认交换机ID，可扩展支持多个
-            "match": instruction.get("extra", {}).get("match", {}),
-            "actions": [],  # DENY 默认丢弃
-            "priority": instruction.get("extra", {}).get("priority", 100)
-        }
+        switches = instruction.get("switches") 
+        if not switches:
+            switches = ["s1"]
+            print("[警告] 意图中未指定 switches，默认使用 s1")
+        results = []
 
-        if instruction.get("extra", {}).get("actions") == "DENY":
-            if send_flow_mod(flow_rule):
-                return f"✅ 流表下发成功 (阻断 {flow_rule['match']})"
-            else:
-                return "❌ 流表下发失败"
+        for sw in switches:
+            try:
+                dpid = convert_switch_name_to_dpid(sw)
+            except ValueError as e:
+                results.append(f"❌ 无法识别交换机 {sw}: {e}")
+                continue
+
+            flow_rule = {
+                "dpid": dpid,
+                "match": instruction.get("extra", {}).get("match", {}),
+                "actions": [],  # DENY 默认丢弃
+                "priority": instruction.get("extra", {}).get("priority", 100)
+            }
+
+            if instruction.get("extra", {}).get("actions") == "DENY":
+                if send_flow_mod(flow_rule):
+                    results.append(f"✅ 成功下发到 {sw} (阻断 {flow_rule['match']})")
+                else:
+                    results.append(f"❌ 下发失败到 {sw}")
+
+        return "\n".join(results)
+
 
     def delete_rule(self, instruction: dict) -> str:
         switches = instruction.get("switches", [])
@@ -1616,43 +1656,95 @@ class FlowTableManager:
 import time
 from backend.net_simulation import mininet_manager as mm
 import re
+from backend.utils.topology_utils import get_path_switches, get_host_ip
+from backend.coordinator.message_pool import message_pool
+from typing import Optional, Tuple
 class QAManager:
-    def ping_test(self, instruction: dict) -> tuple[str, dict or None]:
-        """返回测试结果和失败信息（如果有）"""
+
+    def ping_test(self, instruction: dict) -> Tuple[str, Optional[dict]]:
         print(f"[DEBUG] global_net状态: {mm.global_net}")
         if not mm.global_net:
-            return "❌ 当前没有拓扑 (请先创建拓扑或检查global_net引用)"
+            return "❌ 当前没有拓扑 (请先创建拓扑或检查global_net引用)", None
 
         src_name = instruction.get("extra", {}).get("source") or instruction.get("source")
         target_ip = instruction.get("extra", {}).get("target") or instruction.get("target")
         target_host = instruction.get("extra", {}).get("target_host") or instruction.get("target")
+        expect_result = instruction.get("extra", {}).get("expect_result", None)
+        auto_fix = instruction.get("extra", {}).get("auto_fix", False)
 
         if not src_name or not target_ip:
-            return "❌ 指令缺少 source 或 target"
+            return "❌ 指令缺少 source 或 target", None
 
         src_host = mm.global_net.get(src_name)
         if not src_host:
-            return f"❌ 主机 {src_name} 不存在"
+            return f"❌ 主机 {src_name} 不存在", None
 
-        # 发送3个包，有一个包收到了就说明Ping通了
         print(f"[PING] 第一次尝试: {src_name} -> {target_ip}")
-        result1 = src_host.cmd(f"ping -c 3 -W 1 {target_ip}")
+        result1 = src_host.cmd("ping -c 3 -W 1 %s" % target_ip)
         match1 = re.search(r"(\d+) packets transmitted, (\d+) received", result1)
         success1 = match1 and int(match1.group(2)) >= 1
 
         if success1:
-            return f"{src_name} 可以✅ ping 通 {target_host or target_ip}\n{result1}", None
+            return "%s 可以✅ ping 通 %s\n%s" % (src_name, target_host or target_ip, result1), None
 
-        # 等待5秒控制器可能下发流表
-        print(f"[PING] 第一次失败，等待 5 秒后重试...")
+        print("[PING] 第一次失败，等待 5 秒后重试...")
         time.sleep(5)
 
         print(f"[PING] 第二次尝试: {src_name} -> {target_ip}")
-        result2 = src_host.cmd(f"ping -c 3 -W 1 {target_ip}")
+        result2 = src_host.cmd("ping -c 3 -W 1 %s" % target_ip)
         match2 = re.search(r"(\d+) packets transmitted, (\d+) received", result2)
         success2 = match2 and int(match2.group(2)) >= 1
 
-        return f"{src_name} {'可以✅' if success2 else '无法❌'} ping 通 {target_host or target_ip}\n{result2}"
+        final_result = "%s %s ping 通 %s\n%s" % (
+            src_name, "可以✅" if success2 else "无法❌", target_host or target_ip, result2)
+
+        # ✅ 判断是否要自动修复
+        if (not success2) and expect_result == "success" and auto_fix:
+            print("[QAAgent] ping 失败，触发自动修复链")
+
+            src_ip = get_host_ip(src_name)
+            switches = get_path_switches(src_name, target_ip)
+            match_fields = {
+                "dl_type": 2048,
+                "nw_src": src_ip,
+                "nw_dst": target_ip,
+                "nw_proto": 1
+            }
+
+            # 构造先删除流表的意图
+            delete_intent = {
+                "action": "delete_flowtable",
+                "switches": switches,
+                "match": match_fields
+            }
+
+            # 构造 install_flowtable 意图
+            install_intent = {
+                "action": "install_flowtable",
+                "switches": switches,
+                "extra": {
+                    "match": match_fields,
+                    "actions": "ALLOW",
+                    "priority": 100
+                },
+                "triggered_by": {
+                    "agent": "QAAgent",
+                    "reason": "%s→%s ping failed, auto_fix triggered" % (src_name, target_ip)
+                }
+            }
+
+            # ✅ 先执行删除（可立即推送）
+            print("[QAAgent] 删除原有阻断规则: %s" % delete_intent)
+            from backend.coordinator.message_pool import message_pool
+            print("[qa_manager.py]成功引入消息池")
+            message_pool.publish(delete_intent)
+
+            # ✅ 然后返回 install_intent 让调用方继续广播
+            return final_result + "\n⚙️ 已触发自动修复（删除 + ALLOW）", install_intent
+
+        return final_result, None
+
+
 
 
     def ping_all(self) -> str:
@@ -1712,6 +1804,8 @@ class QAManager:
             if h.IP() == ip:
                 return h.name
         return "unknown"
+
+
 
 
 # 文件路径: ./backend/agent_core/topology_manager.py
@@ -1826,12 +1920,11 @@ class TopologyManager:
 from backend.agents.flow_agent import FlowAgent
 from backend.agents.qa_agent import QAAgent
 from backend.agents.topology_agent import TopologyAgent
-from backend.coordinator.message_pool import MessagePool
-
+from backend.coordinator.message_pool import message_pool
 
 class CoordinatorAgent:
     def __init__(self):
-        self.message_pool = MessagePool()
+        self.message_pool = message_pool
         # 初始化并注册各 Agent
         self.agents = {
             "create_topology": TopologyAgent(),
@@ -1880,8 +1973,9 @@ class MessagePool:
                 if handled:
                     break  # 一旦有 agent 成功处理，就不继续广播
             except Exception as e:
-                print(f"[MessagePool] Agent {agent.__class__.__name__} 处理异常: {e}")
+                print(f"[MessagePool] Agent_Name:{agent.__class__.__name__} 处理异常: {e}")
 
+message_pool = MessagePool()
 
 # 文件路径: ./backend/utils/__init__.py
 
@@ -2089,10 +2183,10 @@ import requests
 from mininet.util import quietRun
 import networkx as nx
 from concurrent.futures import ThreadPoolExecutor
-import re
+from backend.net_simulation import mininet_manager as mm
 import threading
 import itertools
-
+from typing import Optional, Tuple
 def trigger_controller_learn_hosts(net):
     print("[INTENT] 正在触发主机之间通信，帮助控制器学习主机...")
     try:
@@ -2417,6 +2511,36 @@ def fast_host_activation(net, timeout=1):
     elapsed = round(end - start, 4)
     output_lines.append(f"⏱️ 并发唤醒完成，耗时: {elapsed} 秒")
     return "\n".join(output_lines)
+
+# 获取两主机之间的交换机
+def get_path_switches(src_host: str, dst_ip: str) -> list[str]:
+    src = mm.global_net.get(src_host)
+    dst = None
+    dst_host = None
+
+    for name, host in mm.global_net.items():
+        if host.IP() == dst_ip:
+            dst = host
+            dst_host = name
+            break
+
+    if not src or not dst:
+        raise ValueError(f"[get_path_switches] 主机未找到: src={src_host}, dst_ip={dst_ip}")
+
+    G = build_networkx_graph_from_mininet(mm.global_net)
+
+    path = nx.shortest_path(G, src_host, dst_host)
+
+    switches = [node for node in path if node.startswith("s")]
+    return switches
+
+
+    # 根据主机名找ip
+def get_host_ip(host_name: str) -> Tuple[str, Optional[dict]]:
+    try:
+        return mm.global_net.get(host_name).IP()
+    except Exception:
+        return None
 
 
 # 文件路径: ./backend/utils/utils.py

@@ -1,26 +1,21 @@
 # backend/agents/qa_agent.py
 import time
 from backend.agent_core.qa_manager import QAManager
-from backend.coordinator.message_pool import MessagePool  # 引入消息池
+from backend.coordinator.message_pool import message_pool
 
 class QAAgent:
     def __init__(self):
         self.manager = QAManager()
-
+        
     def receive(self, message: dict):
         action = message.get("action")
 
         if action == "ping_test":
-            # result, failed_info = self.manager.ping_test(message)
-            result = self.manager.ping_test(message)
-            message["_result"] = result
-
-            # 如果 ping 失败，自动发起修复请求
-            # if failed_info:
-            #     print("📡 QAAgent 检测失败，触发自动修复指令")
-            #     fix_instr = self.construct_fix_flow(failed_info)
-            #     global_message_pool.publish(fix_instr)
-
+            output, repair_intent = self.manager.ping_test(message)
+            message["_result"] = output
+            if repair_intent:
+                print("[QAAgent] 发布自动修复流表: %s" % repair_intent)
+                message_pool.publish(repair_intent)
             return True
 
         elif action == "ping_all":

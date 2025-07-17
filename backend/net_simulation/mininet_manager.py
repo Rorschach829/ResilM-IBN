@@ -6,6 +6,13 @@ from backend.utils.utils import is_cyclic_topology
 from backend.utils.arp_utils import configure_static_arp
 from backend.utils.topology_utils import trigger_controller_learn_hosts
 import time
+# === 引入图结构支持 ===
+from backend.utils.topology_utils import TopologyGraph
+
+global_net_ip_map = {}   # IP → host 对象
+graph = TopologyGraph()  # 网络图结构（用于路径查找）
+
+
 global_net = None  # 全局保存net实例
 
 def run_mininet_code(code: str) -> str:
@@ -96,12 +103,39 @@ def rebuild_topology(intent_json: dict) -> str:
 
         net.start()  # ✅ 还是要加这个
 
+                # === 构建 IP 映射（global_net_ip_map） ===
+        from backend.net_simulation import net_bridge
+        global global_net_ip_map
+        global_net_ip_map.clear()
+        for host in net.hosts:
+            global_net_ip_map[host.IP()] = host
+        net_bridge.global_net_ip_map = global_net_ip_map
+
+        # === 构建图结构（graph） ===
+        # === 构建图结构（graph） ===
+        global graph
+        graph.graph.clear()
+        for link in net.links:
+            intf1 = link.intf1
+            intf2 = link.intf2
+            node1 = intf1.node.name
+            node2 = intf2.node.name
+            try:
+                port1 = intf1.node.ports[intf1]
+                port2 = intf2.node.ports[intf2]
+                graph.add_link(node1, node2, port=port1)
+                graph.add_link(node2, node1, port=port2)
+            except Exception as e:
+                print(f"[⚠️ 端口获取失败] {node1} <-> {node2} 跳过该链路: {e}")
+
+        net_bridge.graph = graph
+        print("[拓扑图] ✅ 图结构已完成构建")
+
         if hosts_info:
             configure_static_arp(hosts_info)
             print(f"[ARP] 已为 {len(hosts_info)} 个主机配置静态 ARP 条目")
 
         global_net = net
-        from backend.net_simulation import net_bridge
         net_bridge.global_net = net  # ✅ 显式同步到共享空间    
 
         # 执行一次pingPairs
@@ -281,3 +315,14 @@ def clear_all_flow_tables():
         except Exception:
             pass
 
+# 模块级导出接口
+__all__ = [
+    "global_net",
+    "global_net_ip_map",
+    "graph",
+    "run_mininet_code",
+    "get_current_topology",
+    "rebuild_topology",
+    "stop_topology",
+    "clear_all_flow_tables"
+]

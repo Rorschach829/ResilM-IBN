@@ -6,37 +6,62 @@ import backend.net_simulation.mininet_manager as mm
 from backend.utils.utils import convert_switch_name_to_dpid
 from backend.utils.ryu_utils import get_all_switch_ids
 from backend.net_simulation.ryu_controller import send_flow_mod
-
+from backend.utils.topology_utils import get_output_port
 
 class FlowTableManager:
     def install_rule(self, instruction: dict) -> str:
-        switches = instruction.get("switches") 
+        switches = instruction.get("switches")
         if not switches:
             switches = ["s1"]
-            print("[警告] 意图中未指定 switches，默认使用 s1")
+            print("[WARNING] 意图中未指定 switches，默认使用 s1")
         results = []
+
+        extra = instruction.get("extra", {})
+        match = extra.get("match", {})
+        action_flag = extra.get("actions", "DENY")
+        priority = extra.get("priority", 100)
 
         for sw in switches:
             try:
                 dpid = convert_switch_name_to_dpid(sw)
             except ValueError as e:
-                results.append(f"❌ 无法识别交换机 {sw}: {e}")
+                results.append("❌ 无法识别交换机 %s: %s" % (sw, e))
                 continue
 
             flow_rule = {
                 "dpid": dpid,
-                "match": instruction.get("extra", {}).get("match", {}),
-                "actions": [],  # DENY 默认丢弃
-                "priority": instruction.get("extra", {}).get("priority", 100)
+                "match": match,
+                "priority": priority,
+                "actions": []  # 默认 DENY
             }
 
-            if instruction.get("extra", {}).get("actions") == "DENY":
-                if send_flow_mod(flow_rule):
-                    results.append(f"✅ 成功下发到 {sw} (阻断 {flow_rule['match']})")
-                else:
-                    results.append(f"❌ 下发失败到 {sw}")
+            print(f"[flowtable_manager] action_flag为 {action_flag}")
+            if action_flag == "ALLOW":
+                # 尝试获取精确输出端口
+                try:
+                    src_ip = match.get("nw_src")
+                    dst_ip = match.get("nw_dst")
+                    port = get_output_port(sw, dst_ip,mm)  # 你需要提供此函数
+                    
+                    if port is not None:
+                        flow_rule["actions"] = [{"type": "OUTPUT", "port": port}]
+                        print(f"[flowtable_manager]出口端口为{port}")
+
+                    else:
+                        print("[⚠️ Fallback] 找不到端口，改为 FLOOD")
+                        flow_rule["actions"] = [{"type": "OUTPUT", "port": "FLOOD"}]
+                except Exception as e:
+                    print("[⚠️ 错误] 获取端口失败: %s，改为 FLOOD" % e)
+                    flow_rule["actions"] = [{"type": "OUTPUT", "port": "FLOOD"}]
+
+            if send_flow_mod(flow_rule):
+                behavior = "转发" if flow_rule["actions"] else "阻断"
+                results.append("✅ 成功下发到 %s (%s %s)" % (sw, behavior, flow_rule["match"]))
+            else:
+                results.append("❌ 下发失败到 %s" % sw)
 
         return "\n".join(results)
+
 
 
     def delete_rule(self, instruction: dict) -> str:

@@ -2,12 +2,11 @@
 from backend.agents.flow_agent import FlowAgent
 from backend.agents.qa_agent import QAAgent
 from backend.agents.topology_agent import TopologyAgent
-from backend.coordinator.message_pool import MessagePool
-
+from backend.coordinator.message_pool import message_pool
 
 class CoordinatorAgent:
     def __init__(self):
-        self.message_pool = MessagePool()
+        self.message_pool = message_pool
         # 初始化并注册各 Agent
         self.agents = {
             "create_topology": TopologyAgent(),
