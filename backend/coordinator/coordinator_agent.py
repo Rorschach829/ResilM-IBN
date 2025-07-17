@@ -25,7 +25,7 @@ class CoordinatorAgent:
     def handle_instruction_list(self, instructions: list) -> list:
         results = []
         for instr in instructions:
-            self.message_pool.publish(instr)
+            self.message_pool.publish(instr,sender="CoordinatorAgent")
             result = instr.get("_result", "⚠️ 无结果")
             results.append(result)
         return results

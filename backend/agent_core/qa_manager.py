@@ -83,7 +83,7 @@ class QAManager:
             print("[QAAgent] 删除原有阻断规则: %s" % delete_intent)
             from backend.coordinator.message_pool import message_pool
             print("[qa_manager.py]成功引入消息池message_pool")
-            message_pool.publish(delete_intent)
+            message_pool.publish(delete_intent,sender="QAAgent")
 
             # ✅ 然后返回 install_intent 让调用方继续广播
             return final_result + "\n⚙️ 已触发自动修复（删除 + ALLOW）", install_intent

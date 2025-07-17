@@ -15,7 +15,7 @@ class QAAgent:
             message["_result"] = output
             if repair_intent:
                 print("[QAAgent] 发布自动修复流表: %s" % repair_intent)
-                message_pool.publish(repair_intent)
+                message_pool.publish(repair_intent,sender="QAAgent")
             return True
 
         elif action == "ping_all":
