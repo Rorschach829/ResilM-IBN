@@ -180,7 +180,7 @@ if __name__ == '__main__':
 
 
 # 文件路径: ./tmp/intent_log_path.txt
-/data/gjw/Meta-IBN/logs/topo_20250716_192121.jsonl
+/data/gjw/Meta-IBN/logs/topo_20250717_095207.jsonl
 
 # 文件路径: ./backend/__init__.py
 
@@ -615,25 +615,26 @@ def send_flow_mod(flow_rule: dict) -> bool:
     try:
         url = f"{RYU_REST_API}/stats/flowentry/add"
         payload = {
-            "dpid": flow_rule["dpid"],
-            "priority": flow_rule["priority"],
-            "match": flow_rule["match"],
-            "actions": flow_rule["actions"],
-            "command": "add"
+             "dpid": flow_rule["dpid"],
+             "priority": flow_rule["priority"],
+             "match": flow_rule["match"],
+             "actions": flow_rule["actions"],
+             "command": "add"
         }
-
+ 
         response = requests.post(url, json=payload)
-
+ 
         print("[DEBUG] 请求 URL:", url)
         print("[DEBUG] 请求 Payload:", json.dumps(payload, indent=2))
         print("[DEBUG] 响应状态码:", response.status_code)
         print("[DEBUG] 响应内容:", response.text)
-
+ 
         return response.status_code == 200
-
+ 
     except Exception as e:
         print(f"Ryu API调用失败: {e}")
         return False
+
 
 
 
@@ -1241,7 +1242,7 @@ class IntentAgent:
 # backend/agents/qa_agent.py
 import time
 from backend.agent_core.qa_manager import QAManager
-from backend.coordinator.message_pool import global_message_pool  # 引入消息池
+from backend.coordinator.message_pool import MessagePool  # 引入消息池
 
 class QAAgent:
     def __init__(self):
@@ -1251,14 +1252,15 @@ class QAAgent:
         action = message.get("action")
 
         if action == "ping_test":
-            result, failed_info = self.manager.ping_test(message)
+            # result, failed_info = self.manager.ping_test(message)
+            result = self.manager.ping_test(message)
             message["_result"] = result
 
             # 如果 ping 失败，自动发起修复请求
-            if failed_info:
-                print("📡 QAAgent 检测失败，触发自动修复指令")
-                fix_instr = self.construct_fix_flow(failed_info)
-                global_message_pool.publish(fix_instr)
+            # if failed_info:
+            #     print("📡 QAAgent 检测失败，触发自动修复指令")
+            #     fix_instr = self.construct_fix_flow(failed_info)
+            #     global_message_pool.publish(fix_instr)
 
             return True
 
@@ -1287,10 +1289,10 @@ class QAAgent:
             "switches": ["s1"],  # 你可以根据拓扑智能指定
             "extra": {
                 "match": {
-                    "dl_type": 2048,
-                    "nw_src": src,
-                    "nw_dst": dst_ip,
-                    "nw_proto": 1
+                    "eth_type": 2048,
+                    "ipv4_src": src,
+                    "ipv4_dst": dst_ip,
+                    "ip_proto": 1
                 },
                 "actions": "ALLOW",
                 "priority": 100
@@ -1314,6 +1316,26 @@ class TopologyAgent:
     def __init__(self):
         pass
 
+    def receive(self, message: dict) -> bool:
+        action = message.get("action")
+
+        if action == "create_topology":
+            result = self.create_topology(message)
+            message["_result"] = result
+            return True
+
+        elif action == "link_down":
+            result = self.link_down(message)
+            message["_result"] = result
+            return True
+
+        elif action == "link_up":
+            result = self.link_up(message)
+            message["_result"] = result
+            return True
+
+        return False
+        
     def create_topology(self, instruction: dict) -> str:
         start_new_intent_log()
         result = mm.rebuild_topology(instruction)
@@ -1563,38 +1585,22 @@ from backend.net_simulation.ryu_controller import send_flow_mod
 
 class FlowTableManager:
     def install_rule(self, instruction: dict) -> str:
-        switches = instruction.get("switches", [])
-        extra = instruction.get("extra", {})
-        match = extra.get("match", {})
-        priority = extra.get("priority", 100)
-        action_type = extra.get("actions", "DENY")
-
-        if not switches or not match:
-            return "❌ 参数错误：未提供交换机或匹配字段"
-
-        rule = {
-            "match": match,
-            "priority": priority,
-            "actions": []
+        flow_rule = {
+            "dpid": 1,  # 默认交换机ID，可扩展支持多个
+            "match": instruction.get("extra", {}).get("match", {}),
+            "actions": [],  # DENY 默认丢弃
+            "priority": instruction.get("extra", {}).get("priority", 100)
         }
 
-        if action_type == "DENY":
-            rule["actions"] = []
-        elif action_type == "ALLOW":
-            rule["actions"] = [{"type": "OUTPUT", "port": "NORMAL"}]
-        else:
-            return f"❌ 不支持的动作类型: {action_type}"
+        if instruction.get("extra", {}).get("actions") == "DENY":
+            if send_flow_mod(flow_rule):
+                return f"✅ 流表下发成功 (阻断 {flow_rule['match']})"
+            else:
+                return "❌ 流表下发失败"
 
-        success = 0
-        for sw in switches:
-            dpid = convert_switch_name_to_dpid(sw)
-            rule["dpid"] = dpid
-            if send_flow_mod(rule):
-                success += 1
+        
 
-        if success == len(switches):
-            return f"✅ 成功下发流表（匹配: {match}）"
-        return "❌ 流表下发失败"
+
 
     def delete_rule(self, instruction: dict) -> str:
         switches = instruction.get("switches", [])
@@ -1700,35 +1706,45 @@ class FlowTableManager:
 # backend/agent_core/qa_manager.py
 import time
 from backend.net_simulation import mininet_manager as mm
-
+import re
 class QAManager:
     def ping_test(self, instruction: dict) -> tuple[str, dict or None]:
         """返回测试结果和失败信息（如果有）"""
+        print(f"[DEBUG] global_net状态: {mm.global_net}")
         if not mm.global_net:
-            return "❌ 当前无拓扑", None
+            return "❌ 当前没有拓扑 (请先创建拓扑或检查global_net引用)"
 
-        net = mm.global_net
-        hosts = instruction.get("hosts", [])
-        extra = instruction.get("extra", {})
-        src_name = extra.get("source")
-        dst_ip = extra.get("target")
+        src_name = instruction.get("extra", {}).get("source") or instruction.get("source")
+        target_ip = instruction.get("extra", {}).get("target") or instruction.get("target")
+        target_host = instruction.get("extra", {}).get("target_host") or instruction.get("target")
 
-        src = net.get(src_name)
-        if not src:
-            return f"❌ 未找到源主机 {src_name}", None
+        if not src_name or not target_ip:
+            return "❌ 指令缺少 source 或 target"
 
-        print(f"🔍 QA: {src_name} 正在 ping {dst_ip}")
-        result = src.cmd(f"ping -c 1 {dst_ip}")
-        success = "0% packet loss" in result
+        src_host = mm.global_net.get(src_name)
+        if not src_host:
+            return f"❌ 主机 {src_name} 不存在"
 
-        if success:
-            return f"✅ Ping 成功：{src_name} → {dst_ip}", None
-        else:
-            return f"❌ Ping 失败：{src_name} → {dst_ip}\n{result}", {
-                "src": src.IP(),
-                "dst": dst_name := self._get_host_by_ip(dst_ip),
-                "dst_ip": dst_ip
-            }
+        # 发送3个包，有一个包收到了就说明Ping通了
+        print(f"[PING] 第一次尝试: {src_name} -> {target_ip}")
+        result1 = src_host.cmd(f"ping -c 3 -W 1 {target_ip}")
+        match1 = re.search(r"(\d+) packets transmitted, (\d+) received", result1)
+        success1 = match1 and int(match1.group(2)) >= 1
+
+        if success1:
+            return f"{src_name} 可以✅ ping 通 {target_host or target_ip}\n{result1}", None
+
+        # 等待5秒控制器可能下发流表
+        print(f"[PING] 第一次失败，等待 5 秒后重试...")
+        time.sleep(5)
+
+        print(f"[PING] 第二次尝试: {src_name} -> {target_ip}")
+        result2 = src_host.cmd(f"ping -c 3 -W 1 {target_ip}")
+        match2 = re.search(r"(\d+) packets transmitted, (\d+) received", result2)
+        success2 = match2 and int(match2.group(2)) >= 1
+
+        return f"{src_name} {'可以✅' if success2 else '无法❌'} ping 通 {target_host or target_ip}\n{result2}"
+
 
     def ping_all(self) -> str:
         if not mm.global_net:
@@ -2448,7 +2464,7 @@ def build_and_send_all_path_intents(net):
             if src_name == dst_name:
                 continue
             path = nx.shortest_path(tree, source=src_name, target=dst_name)
-            print(f"🚀 Path intent: {src_name} → {dst_name} 路径: {path}")
+            # print(f"🚀 Path intent: {src_name} → {dst_name} 路径: {path}")
 
             src_mac = net.get(src_name).MAC()
             dst_mac = net.get(dst_name).MAC()

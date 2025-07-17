@@ -27,7 +27,7 @@ class QAManager:
         success1 = match1 and int(match1.group(2)) >= 1
 
         if success1:
-            return f"{src_name} 可以✅ ping 通 {target_host or target_ip}\n{result1}"
+            return f"{src_name} 可以✅ ping 通 {target_host or target_ip}\n{result1}", None
 
         # 等待5秒控制器可能下发流表
         print(f"[PING] 第一次失败，等待 5 秒后重试...")
@@ -66,27 +66,30 @@ class QAManager:
             return f"❌ 执行ping_all失败: {e}"
 
     def verify_bandwidth(self, instruction: dict) -> str:
+        src = instruction.get("src_host")
+        dst = instruction.get("dst_host")
+
         if not mm.global_net:
-            return "❌ 当前无拓扑"
+            return "❌ 当前没有拓扑"
 
-        net = mm.global_net
-        src_name = instruction.get("src")
-        dst_name = instruction.get("dst")
-        time_s = instruction.get("time", 5)
+        src_host = mm.global_net.get(src)
+        dst_host = mm.global_net.get(dst)
 
-        src = net.get(src_name)
-        dst = net.get(dst_name)
+        if not src_host or not dst_host:
+            return f"❌ 找不到主机 {src} 或 {dst}"
 
-        if not src or not dst:
-            return "❌ 找不到源或目标主机"
+        try:
+            # 启动目标主机 iperf 服务器, TCP模式
+            dst_host.cmd("iperf -s  -D")
+            time.sleep(1)
 
-        print(f"📡 QA: 带宽测试 {src_name} → {dst_name}（{time_s}s）")
-        dst.cmd("killall -9 iperf >/dev/null 2>&1")
-        dst.cmd(f"iperf -s -u -D")
-        time.sleep(1)
+            # 源主机发起 iperf 的TCP测试
+            result = src_host.cmd(f"iperf -c {dst_host.IP()} -t 5")
+            # return f"📊 带宽测试结果 (h1 → h2):\n{result}"
+            return f"📊 带宽测试结果 ({src} → {dst}):\n{result}"
 
-        result = src.cmd(f"iperf -c {dst.IP()} -u -t {time_s}")
-        return f"✅ 带宽测试结果:\n{result}"
+        except Exception as e:
+            return f"❌ 带宽测试失败: {e}"
 
     def _get_host_by_ip(self, ip: str) -> str:
         """根据 IP 查找主机名"""

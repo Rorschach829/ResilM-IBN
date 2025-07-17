@@ -23,10 +23,6 @@ class FlowTableManager:
             else:
                 return "❌ 流表下发失败"
 
-        
-
-
-
     def delete_rule(self, instruction: dict) -> str:
         switches = instruction.get("switches", [])
         match = instruction.get("match", {})

@@ -27,7 +27,7 @@ def build_and_send_all_path_intents(net):
             if src_name == dst_name:
                 continue
             path = nx.shortest_path(tree, source=src_name, target=dst_name)
-            print(f"🚀 Path intent: {src_name} → {dst_name} 路径: {path}")
+            # print(f"🚀 Path intent: {src_name} → {dst_name} 路径: {path}")
 
             src_mac = net.get(src_name).MAC()
             dst_mac = net.get(dst_name).MAC()
