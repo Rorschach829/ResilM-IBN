@@ -1,85 +1,61 @@
-import re
-from backend.net_simulation import mininet_manager as mm
-from backend.agents.flow_agent import FlowAgent
-from backend.utils.utils import convert_switch_name_to_dpid
+# backend/agents/qa_agent.py
 import time
-# 只做检验操作，不做修改操作
+from backend.agent_core.qa_manager import QAManager
+from backend.coordinator.message_pool import MessagePool  # 引入消息池
+
 class QAAgent:
     def __init__(self):
-        self.flow_agent = FlowAgent()
+        self.manager = QAManager()
 
-    def validate_ping(self, src: str, target_ip: str) -> bool:
-        """
-        执行 ping 操作，判断是否通畅
-        """
-        if not mm.global_net:
-            print("[QA] 当前没有拓扑")
+    def receive(self, message: dict):
+        action = message.get("action")
+
+        if action == "ping_test":
+            # result, failed_info = self.manager.ping_test(message)
+            result = self.manager.ping_test(message)
+            message["_result"] = result
+
+            # 如果 ping 失败，自动发起修复请求
+            # if failed_info:
+            #     print("📡 QAAgent 检测失败，触发自动修复指令")
+            #     fix_instr = self.construct_fix_flow(failed_info)
+            #     global_message_pool.publish(fix_instr)
+
+            return True
+
+        elif action == "ping_all":
+            result = self.manager.ping_all()
+            message["_result"] = result
+            return True
+
+        elif action == "verify_bandwidth":
+            result = self.manager.verify_bandwidth(message)
+            message["_result"] = result
+            return True
+
+        else:
             return False
 
-        src_host = mm.global_net.get(src)
-        if not src_host:
-            print(f"[QA] 主机 {src} 不存在")
-            return False
+    def construct_fix_flow(self, info: dict) -> dict:
+        """构造修复流表的指令"""
+        print("🔧 QAAgent 发现 ping 失败，准备自动触发 FlowAgent 修复")
+        src = info["src"]
+        dst = info["dst"]
+        dst_ip = info["dst_ip"]
 
-        result = src_host.cmd(f"ping -c 3 -W 1 {target_ip}")
-        print(f"[QA] ping 结果:\n{result}")
-
-        match = re.search(r"(\d+) packets transmitted, (\d+) received", result)
-        return bool(match and int(match.group(2)) >= 1)
-
-    def validate_all_connectivity(self) -> dict:
-        """
-        测试所有主机之间是否连通，返回失败对列表
-        """
-        from backend.utils.topology_utils import robust_ping_pairs_multi_thread
-
-        if not mm.global_net:
-            return {"error": "❌ 当前没有拓扑"}
-
-        result = robust_ping_pairs_multi_thread(mm.global_net)
-        return result
-
-    def validate_bandwidth(self, src: str, dst: str, duration: int = 5) -> float:
-        if not mm.global_net:
-            return 0.0
-
-        src_host = mm.global_net.get(src)
-        dst_host = mm.global_net.get(dst)
-
-        if not src_host or not dst_host:
-            return 0.0
-
-        # 启动目标主机上的 iperf server
-        dst_host.cmd("killall -9 iperf")
-        dst_host.cmd("iperf -s -D")
-
-        # 在源主机上运行 iperf client
-        time.sleep(0.5)
-        result = src_host.cmd(f"iperf -c {dst_host.IP()} -t {duration}")
-        print("[QA] 带宽测试结果:\n" + result)
-
-        try:
-            # 匹配 Mbps 或 Gbps 的结果
-            match = re.findall(r"([\d.]+)\s+(M|G)bits/sec", result)
-            if match:
-                val, unit = match[-1]  # 取最后一行的数值
-                val = float(val)
-                if unit == "G":
-                    val *= 1000
-                return val
-            else:
-                print("[QA] ❌ 无法提取带宽")
-                return 0.0
-        except Exception as e:
-            print(f"[QA] ❌ 解析带宽失败: {e}")
-            return 0.0
-
-
-    def validate_flow_installed(self, switch: str, match_rule: dict) -> bool:
-        """
-        判断流表中是否存在指定规则
-        """
-        instruction = {"switches": [switch]}
-        result = self.flow_agent.get_flowtable(instruction)
-
-        return json.dumps(match_rule, sort_keys=True) in result
+        return {
+            "action": "install_flowtable",
+            "switches": ["s1"],  # 你可以根据拓扑智能指定
+            "extra": {
+                "match": {
+                    "eth_type": 2048,
+                    "ipv4_src": src,
+                    "ipv4_dst": dst_ip,
+                    "ip_proto": 1
+                },
+                "actions": "ALLOW",
+                "priority": 100
+            },
+            "_from": "qa_agent",
+            "_timestamp": time.time()
+        }

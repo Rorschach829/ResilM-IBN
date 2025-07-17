@@ -24,9 +24,16 @@ Meta-IBN/
         agents/
             flow_agent.py
             intent_agent.py
+            qa_agent.py
             topology_agent.py
             prompts/
                 intent_agent.txt
+        agent_core/
+            flowtable_manager.py
+            qa_manager.py
+        coordinator/
+            coordinator_agent.py
+            message_pool.py
         utils/
             __init__.py
             arp_utils.py
@@ -173,7 +180,7 @@ if __name__ == '__main__':
 
 
 # 文件路径: ./tmp/intent_log_path.txt
-/data/gjw/Meta-IBN/logs/topo_20250716_172444.jsonl
+/data/gjw/Meta-IBN/logs/topo_20250716_192121.jsonl
 
 # 文件路径: ./backend/__init__.py
 
@@ -272,6 +279,7 @@ from ryu_app.auto_generate_path_intents import build_and_send_all_path_intents
 from backend.net_simulation import net_bridge
 from backend.utils.logger import start_new_intent_log, log_intent
 from backend.net_simulation.mininet_manager import stop_topology
+from backend.coordinator.coordinator_agent import CoordinatorAgent
 import mininet.log
 from contextlib import redirect_stdout
 import sys
@@ -280,6 +288,7 @@ import re
 import os
 import io
 import traceback
+coordinator = CoordinatorAgent()
 # 引入TopologyAgent
 from backend.agents.topology_agent import TopologyAgent
 topology_agent = TopologyAgent()
@@ -288,223 +297,21 @@ topology_agent = TopologyAgent()
 from backend.agents.flow_agent import FlowAgent
 flow_agent = FlowAgent()
 
-# 在执行link_up的恢复网络操作时，跳过以下actions
-SKIP_ACTIONS_ON_RECOVERY = {
-    "ping_test",
-    "get_flowtable",
-    "verify_bandwidth"
-}
+# 引入QA Agent
+from backend.agents.qa_agent import QAAgent
+qa_agent = QAAgent()
 
-def convert_switch_name_to_dpid(name: str) -> int:
-    """
-    将交换机名（如 's1'）转换为对应的 dpid（数字）
-    """
-    if name.startswith("s"):
-        return int(name[1:])
-    raise ValueError(f"无法识别的交换机名: {name}")
 
-# 根据LLM输出的不同action进行不同操作
+# 初始化协调器，只初始化一次
+
 def execute_instruction(instruction: dict) -> str:
-    action = instruction.get("action")
+    instructions = [instruction]
+    coordinator.handle_instruction_list(instructions)
+    return instructions[0].get("_result", "⚠️ 无执行结果")
 
-    if action == "create_topology":
-        return topology_agent.create_topology(instruction)
-    elif action == "shutdown_topology":
-        return topology_agent.shutdown_topology()
-    elif action == "link_down":
-        return topology_agent.link_down(instruction)
-    elif action == "link_up":
-        return topology_agent.link_up(instruction)
-    elif action == "install_flowtable":
-        return flow_agent.install_flowtable(instruction)
-    elif action == "delete_flowtable":
-        return flow_agent.delete_flowtable(instruction)
-    elif action == "get_flowtable":
-        return flow_agent.get_flowtable(instruction)
-
-    elif action == "ping_test":
-        print(f"[DEBUG] global_net状态: {mm.global_net}")
-        if not mm.global_net:
-            return "❌ 当前没有拓扑 (请先创建拓扑或检查global_net引用)"
-
-        src_name = instruction.get("extra", {}).get("source") or instruction.get("source")
-        target_ip = instruction.get("extra", {}).get("target") or instruction.get("target")
-        target_host = instruction.get("extra", {}).get("target_host") or instruction.get("target")
-
-        if not src_name or not target_ip:
-            return "❌ 指令缺少 source 或 target"
-
-        src_host = mm.global_net.get(src_name)
-        if not src_host:
-            return f"❌ 主机 {src_name} 不存在"
-
-        # 发送3个包，有一个包收到了就说明Ping通了
-        print(f"[PING] 第一次尝试: {src_name} -> {target_ip}")
-        result1 = src_host.cmd(f"ping -c 3 -W 1 {target_ip}")
-        match1 = re.search(r"(\d+) packets transmitted, (\d+) received", result1)
-        success1 = match1 and int(match1.group(2)) >= 1
-
-        if success1:
-            return f"{src_name} 可以✅ ping 通 {target_host or target_ip}\n{result1}"
-
-        # 等待5秒控制器可能下发流表
-        print(f"[PING] 第一次失败，等待 5 秒后重试...")
-        time.sleep(5)
-
-        print(f"[PING] 第二次尝试: {src_name} -> {target_ip}")
-        result2 = src_host.cmd(f"ping -c 3 -W 1 {target_ip}")
-        match2 = re.search(r"(\d+) packets transmitted, (\d+) received", result2)
-        success2 = match2 and int(match2.group(2)) >= 1
-
-        return f"{src_name} {'可以✅' if success2 else '无法❌'} ping 通 {target_host or target_ip}\n{result2}"
-
-
-    elif action == "delete_host":
-        if not mm.global_net:
-            return "❌ 当前没有拓扑"
-        target = instruction.get("target")
-        node = mm.global_net.get(target)
-        if not node:
-            return f"❌ 节点 {target} 不存在"
-        mm.global_net.delNode(node)
-        return f"✅ 已删除节点 {target}"
-    
-    # 对主机限速
-    elif action == "limit_bandwidth":
-        src = instruction.get("src_host")
-        dst = instruction.get("dst_host")
-        rate = instruction.get("rate_mbps")
-
-        if not mm.global_net:
-            return "❌ 当前没有拓扑"
-
-        src_host = mm.global_net.get(src)
-        if not src_host:
-            return f"❌ 找不到主机 {src}"
-
-        try:
-            dev = f"{src}-eth0"
-            rate_str = f"{rate}mbit"
-            cmds = [f"tc qdisc del dev {dev} root"]
-
-            if dst:
-                dst_host = mm.global_net.get(dst)
-                if not dst_host:
-                    return f"❌ 找不到目标主机 {dst}"
-                dst_ip = dst_host.IP()
-
-                # 单向限速（仅 h1 → h2）
-                cmds += [
-                    f"tc qdisc add dev {dev} root handle 1: htb default 12",
-                    f"tc class add dev {dev} parent 1: classid 1:1 htb rate {rate_str}",
-                    f"tc filter add dev {dev} protocol ip parent 1: prio 1 u32 match ip dst {dst_ip} flowid 1:1"
-                ]
-                result = f"✅ 成功设置单向限速：{src} → {dst} 为 {rate}Mbps"
-            else:
-                # 全局限速（h1 到所有主机都限）
-                cmds += [
-                    f"tc qdisc add dev {dev} root tbf rate {rate_str} burst 20kb latency 70ms"
-                ]
-                result = f"✅ 成功设置全局限速：{src} 发往所有主机为 {rate}Mbps"
-
-            for c in cmds:
-                src_host.cmd(c)
-
-            return result
-
-        except Exception as e:
-            return f"❌ 限速失败: {e}"
-
-    # 对主机测速
-    elif action == "verify_bandwidth":
-        src = instruction.get("src_host")
-        dst = instruction.get("dst_host")
-
-        if not mm.global_net:
-            return "❌ 当前没有拓扑"
-
-        src_host = mm.global_net.get(src)
-        dst_host = mm.global_net.get(dst)
-
-        if not src_host or not dst_host:
-            return f"❌ 找不到主机 {src} 或 {dst}"
-
-        try:
-            # 启动目标主机 iperf 服务器, TCP模式
-            dst_host.cmd("iperf -s  -D")
-            time.sleep(1)
-
-            # 源主机发起 iperf 的TCP测试
-            result = src_host.cmd(f"iperf -c {dst_host.IP()} -t 5")
-            # return f"📊 带宽测试结果 (h1 → h2):\n{result}"
-            return f"📊 带宽测试结果 ({src} → {dst}):\n{result}"
-
-        except Exception as e:
-            return f"❌ 带宽测试失败: {e}"
-
-    elif action == "clear_bandwidth_limit":
-        host = instruction.get("host")
-
-        if not mm.global_net:
-            return "❌ 当前没有拓扑"
-
-        target = mm.global_net.get(host)
-        if not target:
-            return f"❌ 主机 {host} 不存在"
-
-        try:
-            dev = f"{host}-eth0"
-            cmd = f"tc qdisc del dev {dev} root"
-            result = target.cmd(cmd)
-
-            return f"✅ 已取消主机 {host} 的限速设置\n执行结果:\n{result}"
-        except Exception as e:
-            return f"❌ 取消限速失败: {e}"
-
-    # 测试所有主机连通性
-    # 后续可加入结构化输出（JSON），方便前端展示和 agent 分析
-    elif action == "ping_all":
-        if not mm.global_net:
-            return "❌ 当前没有拓扑"
-        net = mm.global_net
-        try:
-            print("=== 多线程双向ping_all测试===")
-            from backend.utils.topology_utils import robust_ping_pairs_multi_thread
-
-            res = robust_ping_pairs_multi_thread(mm.global_net)
-
-            failed_pairs = res["failed_pairs"]
-            total = res["total"]
-            success = res["success"]
-
-            if not failed_pairs:
-                return f"✅ 所有主机均可互相通信，共测试 {total} 对"
-            else:
-                failed_lines = [f"- {src} → {dst}" for src, dst in failed_pairs]
-                summary = f"✅ 其余 {success} 对主机通信正常"
-                return "❌ 以下主机对无法通信：\n" + "\n".join(failed_lines) + "\n" + summary
-      
-        except Exception as e:
-            return f"❌ 执行ping_all失败: {e}"
-
-
-
-def wait_for_all_hosts(expected=9, timeout=10):
-    import requests
-    import time
-
-    for _ in range(timeout):
-        try:
-            resp = requests.get("http://localhost:8081/intent/valid_hosts")
-            if resp.status_code == 200:
-                hosts = resp.json()
-                print(f"[等待主机] 当前已注册 {len(hosts)} 个主机: {hosts}")
-                if len(hosts) >= expected:
-                    return True
-        except Exception as e:
-            print(f"[等待主机] 请求失败: {e}")
-        time.sleep(1)
-    return False
+def execute_instruction_list(instruction_list: list[dict]) -> list[str]:
+    coordinator.handle_instruction_list(instruction_list)
+    return [instr.get("_result", "⚠️ 无结果") for instr in instruction_list]
 
 
 # 文件路径: ./backend/net_simulation/mininet_manager.py
@@ -1312,64 +1119,43 @@ class TopologyRestController(ControllerBase):
 
 
 # 文件路径: ./backend/agents/flow_agent.py
-import requests
-import json
-from backend.utils.ryu_utils import get_all_switch_ids
-from backend.utils.utils import convert_switch_name_to_dpid
-from backend.net_simulation.ryu_controller import send_flow_mod
+# backend/agents/flow_agent.py (重构版，支持消息池通信)
+from backend.agent_core.flowtable_manager import FlowTableManager
 
 class FlowAgent:
-    def install_flowtable(self, instruction: dict) -> str:
-        flow_rule = {
-            "dpid": 1,  # 默认交换机ID，可拓展支持多个
-            "match": instruction.get("extra", {}).get("match", {}),
-            "actions": [],
-            "priority": instruction.get("extra", {}).get("priority", 100)
-        }
+    def __init__(self):
+        self.manager = FlowTableManager()
 
-        if instruction.get("extra", {}).get("actions") == "DENY":
-            if send_flow_mod(flow_rule):
-                return f"✅ 流表下发成功 (阻断 {flow_rule['match']})"
-            else:
-                return "❌ 流表下发失败"
+    def receive(self, message: dict):
+        action = message.get("action")
+        
+        if action == "install_flowtable":
+            result = self.manager.install_rule(message)
+            message["_result"] = result
+            return True
 
-    def delete_flowtable(self, instruction: dict) -> str:
-        switches = instruction.get("switches", [])
-        match = instruction.get("extra", {}).get("match") or instruction.get("match", {})
+        elif action == "delete_flowtable":
+            result = self.manager.delete_rule(message)
+            message["_result"] = result
+            return True
 
-        if not switches:
-            return "❌ 错误：未指定交换机"
+        elif action == "get_flowtable":
+            result = self.manager.query_table(message)
+            message["_result"] = result
+            return True
 
-        for sw in switches:
-            sw_list = get_all_switch_ids() if sw == "all" else [int(sw.replace("s", ""))]
+        elif action == "limit_bandwidth":
+            result = self.manager.limit_bandwidth(message)
+            message["_result"] = result
+            return True
 
-            for dpid in sw_list:
-                payload = {"dpid": dpid, "match": match}
-                try:
-                    resp = requests.post("http://localhost:8081/stats/flowentry/delete", json=payload)
-                    if resp.status_code != 200:
-                        return f"❌ 删除流表失败，交换机 {dpid} 返回码 {resp.status_code}"
-                except Exception as e:
-                    return f"❌ 删除流表失败: {e}"
-        return "✅ 流表删除成功"
+        elif action == "clear_bandwidth_limit":
+            result = self.manager.clear_bandwidth_limit(message)
+            message["_result"] = result
+            return True
 
-    def get_flowtable(self, instruction: dict) -> str:
-        switches = instruction.get("switches", [])
-        results = []
-        for sw in switches:
-            dpid = convert_switch_name_to_dpid(sw)
-            url = f"http://localhost:8081/stats/flow/{dpid}"
-            try:
-                resp = requests.get(url)
-                if resp.status_code == 200:
-                    flows = resp.json().get(str(dpid), [])
-                    formatted = json.dumps(flows, indent=2, ensure_ascii=False)
-                    results.append(f"✅ 交换机 {sw} 当前流表:\n{formatted}")
-                else:
-                    results.append(f"❌ 无法获取交换机 {sw} 的流表")
-            except Exception as e:
-                results.append(f"❌ 请求失败: {e}")
-        return "\n\n".join(results)
+        else:
+            return False  # 不处理该消息
 
 
 # 文件路径: ./backend/agents/intent_agent.py
@@ -1398,6 +1184,7 @@ class IntentAgent:
         """
         template = self.load_prompt_template()
         return template.format(intent_text=intent_text)
+        
     def intent_to_instruction(self, intent_text: str) -> dict:
       # 现将response赋值为None，防止调用出错
         response = None
@@ -1448,6 +1235,69 @@ class IntentAgent:
         except json.JSONDecodeError as e:
             raise Exception(f"LLM 返回内容不是有效JSON: {e}\n内容:\n{content}")
 
+
+
+# 文件路径: ./backend/agents/qa_agent.py
+# backend/agents/qa_agent.py
+import time
+from backend.agent_core.qa_manager import QAManager
+from backend.coordinator.message_pool import global_message_pool  # 引入消息池
+
+class QAAgent:
+    def __init__(self):
+        self.manager = QAManager()
+
+    def receive(self, message: dict):
+        action = message.get("action")
+
+        if action == "ping_test":
+            result, failed_info = self.manager.ping_test(message)
+            message["_result"] = result
+
+            # 如果 ping 失败，自动发起修复请求
+            if failed_info:
+                print("📡 QAAgent 检测失败，触发自动修复指令")
+                fix_instr = self.construct_fix_flow(failed_info)
+                global_message_pool.publish(fix_instr)
+
+            return True
+
+        elif action == "ping_all":
+            result = self.manager.ping_all()
+            message["_result"] = result
+            return True
+
+        elif action == "verify_bandwidth":
+            result = self.manager.verify_bandwidth(message)
+            message["_result"] = result
+            return True
+
+        else:
+            return False
+
+    def construct_fix_flow(self, info: dict) -> dict:
+        """构造修复流表的指令"""
+        print("🔧 QAAgent 发现 ping 失败，准备自动触发 FlowAgent 修复")
+        src = info["src"]
+        dst = info["dst"]
+        dst_ip = info["dst_ip"]
+
+        return {
+            "action": "install_flowtable",
+            "switches": ["s1"],  # 你可以根据拓扑智能指定
+            "extra": {
+                "match": {
+                    "dl_type": 2048,
+                    "nw_src": src,
+                    "nw_dst": dst_ip,
+                    "nw_proto": 1
+                },
+                "actions": "ALLOW",
+                "priority": 100
+            },
+            "_from": "qa_agent",
+            "_timestamp": time.time()
+        }
 
 
 # 文件路径: ./backend/agents/topology_agent.py
@@ -1698,6 +1548,304 @@ class TopologyAgent:
 
 用户意图：
 {intent_text}
+
+
+# 文件路径: ./backend/agent_core/flowtable_manager.py
+# backend/utils/flowtable_manager.py
+
+import requests
+import json
+import backend.net_simulation.mininet_manager as mm
+from backend.utils.utils import convert_switch_name_to_dpid
+from backend.utils.ryu_utils import get_all_switch_ids
+from backend.net_simulation.ryu_controller import send_flow_mod
+
+
+class FlowTableManager:
+    def install_rule(self, instruction: dict) -> str:
+        switches = instruction.get("switches", [])
+        extra = instruction.get("extra", {})
+        match = extra.get("match", {})
+        priority = extra.get("priority", 100)
+        action_type = extra.get("actions", "DENY")
+
+        if not switches or not match:
+            return "❌ 参数错误：未提供交换机或匹配字段"
+
+        rule = {
+            "match": match,
+            "priority": priority,
+            "actions": []
+        }
+
+        if action_type == "DENY":
+            rule["actions"] = []
+        elif action_type == "ALLOW":
+            rule["actions"] = [{"type": "OUTPUT", "port": "NORMAL"}]
+        else:
+            return f"❌ 不支持的动作类型: {action_type}"
+
+        success = 0
+        for sw in switches:
+            dpid = convert_switch_name_to_dpid(sw)
+            rule["dpid"] = dpid
+            if send_flow_mod(rule):
+                success += 1
+
+        if success == len(switches):
+            return f"✅ 成功下发流表（匹配: {match}）"
+        return "❌ 流表下发失败"
+
+    def delete_rule(self, instruction: dict) -> str:
+        switches = instruction.get("switches", [])
+        match = instruction.get("match", {})
+
+        if not switches or not match:
+            return "❌ 参数错误：未提供交换机或匹配字段"
+
+        for sw in switches:
+            sw_list = get_all_switch_ids() if sw == "all" else [convert_switch_name_to_dpid(sw)]
+
+            for dpid in sw_list:
+                payload = {"dpid": dpid, "match": match}
+                try:
+                    resp = requests.post("http://localhost:8081/stats/flowentry/delete", json=payload)
+                    if resp.status_code != 200:
+                        return f"❌ 删除失败，交换机 {dpid} 返回码 {resp.status_code}"
+                except Exception as e:
+                    return f"❌ 删除失败: {e}"
+
+        return "✅ 流表删除成功"
+
+    def query_table(self, instruction: dict) -> str:
+        switches = instruction.get("switches", [])
+        results = []
+
+        for sw in switches:
+            dpid = convert_switch_name_to_dpid(sw)
+            url = f"http://localhost:8081/stats/flow/{dpid}"
+
+            try:
+                resp = requests.get(url)
+                if resp.status_code == 200:
+                    flows = resp.json().get(str(dpid), [])
+                    formatted = json.dumps(flows, indent=2, ensure_ascii=False)
+                    results.append(f"✅ {sw} 流表:\n{formatted}")
+                else:
+                    results.append(f"❌ 获取 {sw} 流表失败")
+            except Exception as e:
+                results.append(f"❌ 请求失败: {e}")
+
+        return "\n\n".join(results)
+
+    def limit_bandwidth(self, instruction: dict) -> str:
+        src = instruction.get("src_host")
+        dst = instruction.get("dst_host")
+        rate = instruction.get("rate_mbps")
+
+        if not mm.global_net:
+            return "❌ 当前没有拓扑"
+
+        src_host = mm.global_net.get(src)
+        if not src_host:
+            return f"❌ 找不到主机 {src}"
+
+        try:
+            dev = f"{src}-eth0"
+            rate_str = f"{rate}mbit"
+            cmds = [f"tc qdisc del dev {dev} root"]
+
+            if dst:
+                dst_host = mm.global_net.get(dst)
+                if not dst_host:
+                    return f"❌ 找不到目标主机 {dst}"
+                dst_ip = dst_host.IP()
+
+                cmds += [
+                    f"tc qdisc add dev {dev} root handle 1: htb default 12",
+                    f"tc class add dev {dev} parent 1: classid 1:1 htb rate {rate_str}",
+                    f"tc filter add dev {dev} protocol ip parent 1: prio 1 u32 match ip dst {dst_ip} flowid 1:1"
+                ]
+                result = f"✅ 限速：{src} → {dst} = {rate}Mbps"
+            else:
+                cmds += [
+                    f"tc qdisc add dev {dev} root tbf rate {rate_str} burst 20kb latency 70ms"
+                ]
+                result = f"✅ 限速：{src} = {rate}Mbps"
+
+            for c in cmds:
+                src_host.cmd(c)
+            return result
+        except Exception as e:
+            return f"❌ 限速失败: {e}"
+
+    def clear_bandwidth_limit(self, instruction: dict) -> str:
+        host = instruction.get("host")
+        if not mm.global_net:
+            return "❌ 当前没有拓扑"
+        target = mm.global_net.get(host)
+        if not target:
+            return f"❌ 主机 {host} 不存在"
+
+        try:
+            dev = f"{host}-eth0"
+            cmd = f"tc qdisc del dev {dev} root"
+            result = target.cmd(cmd)
+            return f"✅ 已取消限速：{host}\n执行结果:\n{result}"
+        except Exception as e:
+            return f"❌ 取消限速失败: {e}"
+
+
+# 文件路径: ./backend/agent_core/qa_manager.py
+# backend/agent_core/qa_manager.py
+import time
+from backend.net_simulation import mininet_manager as mm
+
+class QAManager:
+    def ping_test(self, instruction: dict) -> tuple[str, dict or None]:
+        """返回测试结果和失败信息（如果有）"""
+        if not mm.global_net:
+            return "❌ 当前无拓扑", None
+
+        net = mm.global_net
+        hosts = instruction.get("hosts", [])
+        extra = instruction.get("extra", {})
+        src_name = extra.get("source")
+        dst_ip = extra.get("target")
+
+        src = net.get(src_name)
+        if not src:
+            return f"❌ 未找到源主机 {src_name}", None
+
+        print(f"🔍 QA: {src_name} 正在 ping {dst_ip}")
+        result = src.cmd(f"ping -c 1 {dst_ip}")
+        success = "0% packet loss" in result
+
+        if success:
+            return f"✅ Ping 成功：{src_name} → {dst_ip}", None
+        else:
+            return f"❌ Ping 失败：{src_name} → {dst_ip}\n{result}", {
+                "src": src.IP(),
+                "dst": dst_name := self._get_host_by_ip(dst_ip),
+                "dst_ip": dst_ip
+            }
+
+    def ping_all(self) -> str:
+        if not mm.global_net:
+            return "❌ 当前没有拓扑"
+        net = mm.global_net
+        try:
+            print("=== 多线程双向ping_all测试===")
+            from backend.utils.topology_utils import robust_ping_pairs_multi_thread
+
+            res = robust_ping_pairs_multi_thread(mm.global_net)
+
+            failed_pairs = res["failed_pairs"]
+            total = res["total"]
+            success = res["success"]
+
+            if not failed_pairs:
+                return f"✅ 所有主机均可互相通信，共测试 {total} 对"
+            else:
+                failed_lines = [f"- {src} → {dst}" for src, dst in failed_pairs]
+                summary = f"✅ 其余 {success} 对主机通信正常"
+                return "❌ 以下主机对无法通信：\n" + "\n".join(failed_lines) + "\n" + summary
+      
+        except Exception as e:
+            return f"❌ 执行ping_all失败: {e}"
+
+    def verify_bandwidth(self, instruction: dict) -> str:
+        if not mm.global_net:
+            return "❌ 当前无拓扑"
+
+        net = mm.global_net
+        src_name = instruction.get("src")
+        dst_name = instruction.get("dst")
+        time_s = instruction.get("time", 5)
+
+        src = net.get(src_name)
+        dst = net.get(dst_name)
+
+        if not src or not dst:
+            return "❌ 找不到源或目标主机"
+
+        print(f"📡 QA: 带宽测试 {src_name} → {dst_name}（{time_s}s）")
+        dst.cmd("killall -9 iperf >/dev/null 2>&1")
+        dst.cmd(f"iperf -s -u -D")
+        time.sleep(1)
+
+        result = src.cmd(f"iperf -c {dst.IP()} -u -t {time_s}")
+        return f"✅ 带宽测试结果:\n{result}"
+
+    def _get_host_by_ip(self, ip: str) -> str:
+        """根据 IP 查找主机名"""
+        net = mm.global_net
+        for h in net.hosts:
+            if h.IP() == ip:
+                return h.name
+        return "unknown"
+
+
+# 文件路径: ./backend/coordinator/coordinator_agent.py
+# coordinator_agent.py
+from backend.agents.flow_agent import FlowAgent
+from backend.agents.qa_agent import QAAgent
+from backend.agents.topology_agent import TopologyAgent
+from backend.coordinator.message_pool import MessagePool
+
+
+class CoordinatorAgent:
+    def __init__(self):
+        self.message_pool = MessagePool()
+        # 初始化并注册各 Agent
+        self.agents = {
+            "create_topology": TopologyAgent(),
+            "install_flowtable": FlowAgent(),
+            "delete_flowtable": FlowAgent(),
+            "get_flowtable": FlowAgent(),
+            "ping_test": QAAgent(),
+            "ping_all": QAAgent(),
+            "verify_bandwidth": QAAgent(),
+            "link_down": TopologyAgent(),
+            "link_up": TopologyAgent()
+        }
+        for agent in self.agents.values():
+            self.message_pool.subscribe(agent)
+
+    def handle_instruction_list(self, instructions: list) -> list:
+        results = []
+        for instr in instructions:
+            self.message_pool.publish(instr)
+            result = instr.get("_result", "⚠️ 无结果")
+            results.append(result)
+        return results
+
+
+# 文件路径: ./backend/coordinator/message_pool.py
+# 消息池
+class MessagePool:
+    def __init__(self):
+        self.subscribers = []  # 订阅者列表，每个 Agent 都会注册进来
+
+    def subscribe(self, agent):
+        if hasattr(agent, "receive"):
+            self.subscribers.append(agent)
+        else:
+            raise ValueError(f"Agent {agent.__class__.__name__} 不支持 receive 方法")
+
+    def publish(self, message: dict):
+        """
+        将一条 message 广播给所有 agent
+        Agent 可选择是否处理该 message
+        处理结果由 Agent 在 message 中写入 '_result' 字段（如果有）
+        """
+        for agent in self.subscribers:
+            try:
+                handled = agent.receive(message)  # 支持 None/False 表示未处理
+                if handled:
+                    break  # 一旦有 agent 成功处理，就不继续广播
+            except Exception as e:
+                print(f"[MessagePool] Agent {agent.__class__.__name__} 处理异常: {e}")
 
 
 # 文件路径: ./backend/utils/__init__.py

@@ -11,6 +11,26 @@ class TopologyAgent:
     def __init__(self):
         pass
 
+    def receive(self, message: dict) -> bool:
+        action = message.get("action")
+
+        if action == "create_topology":
+            result = self.create_topology(message)
+            message["_result"] = result
+            return True
+
+        elif action == "link_down":
+            result = self.link_down(message)
+            message["_result"] = result
+            return True
+
+        elif action == "link_up":
+            result = self.link_up(message)
+            message["_result"] = result
+            return True
+
+        return False
+        
     def create_topology(self, instruction: dict) -> str:
         start_new_intent_log()
         result = mm.rebuild_topology(instruction)
