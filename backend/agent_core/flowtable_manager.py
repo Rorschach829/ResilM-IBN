@@ -10,18 +10,34 @@ from backend.net_simulation.ryu_controller import send_flow_mod
 
 class FlowTableManager:
     def install_rule(self, instruction: dict) -> str:
-        flow_rule = {
-            "dpid": 1,  # 默认交换机ID，可扩展支持多个
-            "match": instruction.get("extra", {}).get("match", {}),
-            "actions": [],  # DENY 默认丢弃
-            "priority": instruction.get("extra", {}).get("priority", 100)
-        }
+        switches = instruction.get("switches") 
+        if not switches:
+            switches = ["s1"]
+            print("[警告] 意图中未指定 switches，默认使用 s1")
+        results = []
 
-        if instruction.get("extra", {}).get("actions") == "DENY":
-            if send_flow_mod(flow_rule):
-                return f"✅ 流表下发成功 (阻断 {flow_rule['match']})"
-            else:
-                return "❌ 流表下发失败"
+        for sw in switches:
+            try:
+                dpid = convert_switch_name_to_dpid(sw)
+            except ValueError as e:
+                results.append(f"❌ 无法识别交换机 {sw}: {e}")
+                continue
+
+            flow_rule = {
+                "dpid": dpid,
+                "match": instruction.get("extra", {}).get("match", {}),
+                "actions": [],  # DENY 默认丢弃
+                "priority": instruction.get("extra", {}).get("priority", 100)
+            }
+
+            if instruction.get("extra", {}).get("actions") == "DENY":
+                if send_flow_mod(flow_rule):
+                    results.append(f"✅ 成功下发到 {sw} (阻断 {flow_rule['match']})")
+                else:
+                    results.append(f"❌ 下发失败到 {sw}")
+
+        return "\n".join(results)
+
 
     def delete_rule(self, instruction: dict) -> str:
         switches = instruction.get("switches", [])
