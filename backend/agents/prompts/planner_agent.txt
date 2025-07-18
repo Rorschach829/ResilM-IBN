@@ -114,55 +114,41 @@
 - 用户可能会说“测试全部连通性”、“所有主机 ping 一下”、“检测网络连接状态”、“测试主机间连通性”等，都解析为 ping_all；
 - 输出 JSON 结构只需包含 {{ "action": "ping_all" }}
 
-12. plan
-   - intent_text: 表示原始的用户意图文本，后续将交由 PlannerAgent 拆解为多个指令。
-   - 示例：
-     {{
-       "action": "plan",
-       "intent_text": "创建一个 h1 到 h3 的拓扑，并阻断 h2 到 h3 的连接，同时限速 h1 到 h2 带宽为 10Mbps，再测试 h1 能否 ping 通 h3"
-     }}
-
-说明：
-- 当用户的自然语言意图包含多个步骤、多个目标，或者存在依赖顺序时，应返回 plan 指令；
-- 系统将把该 plan 结构化指令发送给 PlannerAgent 进行进一步拆解；
-- LLM 不应直接拆解为多条指令，而是交由 PlannerAgent 统一规划。
-
 额外说明：
+- 如果用户的意图中包含多个动作（如创建拓扑并测试连接），请将其拆分为多个 JSON 指令；
+- 多个 JSON 指令请组成一个数组，并只返回该 JSON 数组；
 - 数组中的指令必须严格符合上面的 action 格式，每个对象为一个独立动作。
 
 示例：
 
 用户意图：
 创建一个包含 h1、h2 和 s1 的拓扑，并测试 h1 能否 ping 通 h2
-返回的json应该是：
-{{
-  "action": "plan",
-  "intent_text": "创建一个包含 h1、h2 和 s1 的拓扑，并测试 h1 能否 ping 通 h2"
-}}
 
-
-示例：
-
-当用户意图为：删除阻止 h1 ping h2 的流表规则
-返回 JSON应该是：
-{{
-  "action": "delete_flowtable",
-  "switches": ["s1"],
-  "match": {{
-    "dl_type": 2048,
-    "nw_src": "10.0.0.1",
-    "nw_dst": "10.0.0.2",
-    "nw_proto": 1
+返回：
+[
+  {{
+    "action": "create_topology",
+    "hosts": ["h1", "h2"],
+    "switches": ["s1"],
+    "links": [
+      {{"src": "h1", "dst": "s1"}},
+      {{"src": "h2", "dst": "s1"}}
+    ],
+    "controller": {{
+      "type": "RemoteController",
+      "ip": "127.0.0.1",
+      "port": 6633
+    }}
+  }},
+  {{
+    "action": "ping_test",
+    "hosts": ["h1", "h2"],
+    "extra": {{
+      "source": "h1",
+      "target": "10.0.0.2"
+    }}
   }}
-}}
-
-当用户意图为: 查看交换机s1的流表时
-返回 JSON应该是：
-{{
-  "action": "get_flowtable",
-  "switches": ["s1"]
-}}
-
+]
 
 用户意图：
 {intent_text}

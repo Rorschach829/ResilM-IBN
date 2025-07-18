@@ -50,8 +50,20 @@ class PlannerAgent:
             return
 
         for task in tasks:
-            task["sender"] = self.name
-            task["trace_id"] = trace_id
-            task["timestamp"] = int(time.time())
-            task["time_str"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-            message_pool.publish(task)
+            enriched = {
+                **task,
+                "sender": self.name,
+                "trace_id": trace_id,
+                "timestamp": int(time.time()),
+                "time_str": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+            }
+            print(f"[PlannerAgent] 📤 发布子任务: {enriched}")
+            message_pool.publish(enriched)
+        # for task in tasks:
+        #     task["sender"] = self.name
+        #     task["trace_id"] = trace_id
+        #     task["timestamp"] = int(time.time())
+        #     task["time_str"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        #     message_pool.publish(task)
+
+        

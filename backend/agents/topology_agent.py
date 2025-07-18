@@ -33,7 +33,7 @@ class TopologyAgent:
         message_pool.subscribe("create_topology", self.handle_create)
         message_pool.subscribe("link_down", self.handle_link_down)
         message_pool.subscribe("link_up", self.handle_link_up)
-
+        
     def handle_create(self, message: dict):
         result = self.manager.create_topology(message)
         message["_result"] = result

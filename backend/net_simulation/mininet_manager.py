@@ -211,7 +211,8 @@ def build_mininet_code_from_json(data: dict, enable_stp: bool = True) -> str:
     lines.append("")
     lines.append("# 动态添加链路")
     for link in links:
-        print("📌 实际Link:", link)
+        # 以下打印仅供测试用
+        # print("📌 实际Link:", link)
         lines.append(f"net.addLink({link['src']}, {link['dst']})")
 
     lines += [
@@ -223,18 +224,18 @@ def build_mininet_code_from_json(data: dict, enable_stp: bool = True) -> str:
         "    h.cmd('sysctl -w net.ipv6.conf.all.disable_ipv6=1')",
         "",
         "# 显示动态网络信息",
-        "print('\\n=== 动态网络拓扑信息 ===')",
+        "print('\\n=== 动态网络拓扑信息已隐藏，可以mininet_manager手动打开 ===')",
         "print(f'主机数量: {len(hosts_info)}')",
-        "for host_name, info in hosts_info.items():",
-        "    print(f'{host_name}: {info[\"ip\"]} (MAC: {info[\"node\"].MAC()})')",
+        "#for host_name, info in hosts_info.items():",
+        "#    print(f'{host_name}: {info[\"ip\"]} (MAC: {info[\"node\"].MAC()})')",
         "",
         "print(f'\\n交换机数量: {len(switches_info)}')",
         "for switch_name, info in switches_info.items():",
         "    print(f'{switch_name}: DPID {info[\"dpid\"]} ({info[\"node\"].dpid})')",
         "",
-        "print('\\n=== 链路信息 ===')",
-        "for link in net.links:",
-        "    print(f'{link.intf1.node.name}({link.intf1.name}) <-> {link.intf2.node.name}({link.intf2.name})')",
+        "print('\\n=== 链路信息已隐藏，可在mininet_manager处打开 ===')",
+        "#for link in net.links:",
+        "#    print(f'{link.intf1.node.name}({link.intf1.name}) <-> {link.intf2.node.name}({link.intf2.name})')",
         "",
 
         f"if {str(enable_stp)}:",
@@ -281,10 +282,10 @@ def build_mininet_code_from_json(data: dict, enable_stp: bool = True) -> str:
         "add_arp_entries()",
         # "# 手动pingPairs ",
         "# 查看每台主机的 ARP 表",
-        "print('\\n=== 每台主机 ARP 表 ===')",
-        "for h in net.hosts:",
-        "    print(f'[{h.name}] ARP 表:')",
-        "    print(h.cmd('arp -n'))",
+        "print('\\n=== 每台主机 ARP 表已隐藏，可在mm处打开显示 ===')",
+        "#for h in net.hosts:",
+        "#    print(f'[{h.name}] ARP 表:')",
+        "#    print(h.cmd('arp -n'))",
         "",
         "",
         "# 提供进入CLI的选项",
