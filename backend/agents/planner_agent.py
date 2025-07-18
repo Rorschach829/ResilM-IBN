@@ -30,6 +30,7 @@
 #             message_pool.publish(task)
 from backend.coordinator.message_pool import message_pool
 from backend.llm.llm_utils import call_llm_for_planning
+from backend.utils.messagepool_utils import send_intent
 import time, uuid
 
 class PlannerAgent:
@@ -50,15 +51,8 @@ class PlannerAgent:
             return
 
         for task in tasks:
-            enriched = {
-                **task,
-                "sender": self.name,
-                "trace_id": trace_id,
-                "timestamp": int(time.time()),
-                "time_str": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-            }
-            print(f"[PlannerAgent] 📤 发布子任务: {enriched}")
-            message_pool.publish(enriched)
+            print(f"[PlannerAgent] 📤 准备发布子任务: {task}")
+            send_intent(task, sender=self.name, trace_id=trace_id)
         # for task in tasks:
         #     task["sender"] = self.name
         #     task["trace_id"] = trace_id

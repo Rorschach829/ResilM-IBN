@@ -34,7 +34,7 @@
 import time
 from backend.agent_core.qa_manager import QAManager
 from backend.coordinator.message_pool import message_pool
-
+from backend.utils.messagepool_utils import send_intent
 class QAAgent:
     def __init__(self):
         self.manager = QAManager()
@@ -47,7 +47,9 @@ class QAAgent:
         message["_result"] = output
         if repair_intent:
             print("[QAAgent] 发布自动修复流表: %s" % repair_intent)
-            message_pool.publish(repair_intent, sender="QAAgent")
+            trace_id = message.get("trace_id")  # ⬅️ 拿到原始 ping_test 指令的 trace_id
+            repair_intent["triggered_by"] = message.get("sender", "Unknown")
+            send_intent(repair_intent, sender="QAAgent", trace_id=trace_id)
 
     def handle_ping_all(self, message: dict):
         result = self.manager.ping_all()

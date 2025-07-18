@@ -5,6 +5,7 @@ import re
 from backend.utils.topology_utils import get_path_switches, get_host_ip
 from backend.coordinator.message_pool import message_pool
 from typing import Optional, Tuple
+from backend.utils.messagepool_utils import send_intent
 class QAManager:
 
     def ping_test(self, instruction: dict) -> Tuple[str, Optional[dict]]:
@@ -83,8 +84,10 @@ class QAManager:
             print("[QAAgent] 删除原有阻断规则: %s" % delete_intent)
             from backend.coordinator.message_pool import message_pool
             print("[qa_manager.py]成功引入消息池message_pool")
-            message_pool.publish(delete_intent,sender="QAAgent")
-
+            
+            trace_id = instruction.get("trace_id")  # 🧠 保留上下文链路
+            send_intent(delete_intent, sender="QAAgent", trace_id=trace_id)
+            
             # ✅ 然后返回 install_intent 让调用方继续广播
             return final_result + "\n⚙️ 已触发自动修复（删除 + ALLOW）", install_intent
 
