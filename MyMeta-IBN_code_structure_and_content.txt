@@ -185,7 +185,7 @@ if __name__ == '__main__':
 
 
 # 文件路径: ./tmp/intent_log_path.txt
-/data/gjw/Meta-IBN/logs/topo_20250717_184148.jsonl
+/data/gjw/Meta-IBN/logs/topo_20250718_104405.jsonl
 
 # 文件路径: ./backend/__init__.py
 
@@ -1165,51 +1165,86 @@ class TopologyRestController(ControllerBase):
 
 
 # 文件路径: ./backend/agents/flow_agent.py
-# backend/agents/flow_agent.py (重构版，支持消息池通信)
+# # backend/agents/flow_agent.py (重构版，支持消息池通信)
+# from backend.agent_core.flowtable_manager import FlowTableManager
+
+# class FlowAgent:
+#     def __init__(self):
+#         self.manager = FlowTableManager()
+
+#     def receive(self, message: dict):
+#         action = message.get("action")
+        
+#         if action == "install_flowtable":
+#             if "triggered_by" in message:
+#                 print(f"[FlowAgent] 接收到 QAAgent 自动修复意图: {message['triggered_by']}")
+#                 message["_source_agent"] = "QAAgent"
+#             else:
+#                 message["_source_agent"] = "User"
+
+#             result = self.manager.install_rule(message)
+#             message["_result"] = result
+#             return True
+
+#         elif action == "delete_flowtable":
+#             result = self.manager.delete_rule(message)
+#             message["_result"] = result
+#             return True
+
+#         elif action == "get_flowtable":
+#             result = self.manager.query_table(message)
+#             message["_result"] = result
+#             return True
+
+#         elif action == "limit_bandwidth":
+#             result = self.manager.limit_bandwidth(message)
+#             message["_result"] = result
+#             return True
+
+#         elif action == "clear_bandwidth_limit":
+#             result = self.manager.clear_bandwidth_limit(message)
+#             message["_result"] = result
+#             return True
+
+#         else:
+#             return False  # 不处理该消息
+from backend.coordinator.message_pool import message_pool
 from backend.agent_core.flowtable_manager import FlowTableManager
-from backend.net_simulation import mininet_manager as mm
-from backend.utils.topology_utils import get_output_port
 
 class FlowAgent:
     def __init__(self):
         self.manager = FlowTableManager()
+        message_pool.subscribe("install_flowtable", self.handle_install)
+        message_pool.subscribe("delete_flowtable", self.handle_delete)
+        message_pool.subscribe("get_flowtable", self.handle_get)
+        message_pool.subscribe("limit_bandwidth", self.handle_limit_bw)
+        message_pool.subscribe("clear_bandwidth_limit", self.handle_clear_bw)
 
-    def receive(self, message: dict):
-        action = message.get("action")
-        
-        if action == "install_flowtable":
-            if "triggered_by" in message:
-                print(f"[FlowAgent] 接收到 QAAgent 自动修复意图: {message['triggered_by']}")
-                message["_source_agent"] = "QAAgent"
-            else:
-                message["_source_agent"] = "User"
-
-            result = self.manager.install_rule(message)
-            message["_result"] = result
-            return True
-
-        elif action == "delete_flowtable":
-            result = self.manager.delete_rule(message)
-            message["_result"] = result
-            return True
-
-        elif action == "get_flowtable":
-            result = self.manager.query_table(message)
-            message["_result"] = result
-            return True
-
-        elif action == "limit_bandwidth":
-            result = self.manager.limit_bandwidth(message)
-            message["_result"] = result
-            return True
-
-        elif action == "clear_bandwidth_limit":
-            result = self.manager.clear_bandwidth_limit(message)
-            message["_result"] = result
-            return True
-
+    def handle_install(self, message: dict):
+        if "triggered_by" in message:
+            print(f"[FlowAgent] 接收到 QAAgent 自动修复意图: {message['triggered_by']}")
+            message["_source_agent"] = "QAAgent"
         else:
-            return False  # 不处理该消息
+            message["_source_agent"] = "User"
+
+        result = self.manager.install_rule(message)
+        message["_result"] = result
+
+    def handle_delete(self, message: dict):
+        result = self.manager.delete_rule(message)
+        message["_result"] = result
+
+    def handle_get(self, message: dict):
+        result = self.manager.query_table(message)
+        message["_result"] = result
+
+    def handle_limit_bw(self, message: dict):
+        result = self.manager.limit_bandwidth(message)
+        message["_result"] = result
+
+    def handle_clear_bw(self, message: dict):
+        result = self.manager.clear_bandwidth_limit(message)
+        message["_result"] = result
 
 
 # 文件路径: ./backend/agents/intent_agent.py
@@ -1292,40 +1327,98 @@ class IntentAgent:
 
 
 # 文件路径: ./backend/agents/planner_agent.py
-import time
-import uuid
-from backend.llm_utils import call_llm_for_planning
+# import time
+# import uuid
+# from backend.llm.llm_utils import call_llm_for_planning
+# from backend.coordinator.message_pool import message_pool
+
+# class PlannerAgent:
+#     def __init__(self):
+#         self.name = "PlannerAgent"
+#         message_pool.subscribe("plan", self.handle_plan)
+#         print("[PlannerAgent] ✅ 已注册，监听 action='plan' 消息")
+
+#     def handle_plan(self, message):
+#         intent_text = message.get("intent_text", "")
+#         trace_id = message.get("trace_id", str(uuid.uuid4()))
+#         print(f"[PlannerAgent] 接收到意图文本: {intent_text}")
+
+#         try:
+#             # 使用 LLM 解析意图为任务列表
+#             tasks = call_llm_for_planning(intent_text)
+#         except Exception as e:
+#             print(f"[PlannerAgent] ❌ 调用 LLM 失败: {e}")
+#             return
+
+#         # 注入公共字段并广播
+#         for task in tasks:
+#             task["sender"] = self.name
+#             task["timestamp"] = int(time.time())
+#             task["time_str"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+#             task["trace_id"] = trace_id
+#             message_pool.publish(task)
 from backend.coordinator.message_pool import message_pool
+from backend.llm.llm_utils import call_llm_for_planning
+import time, uuid
 
 class PlannerAgent:
     def __init__(self):
         self.name = "PlannerAgent"
-        message_pool.register("plan", self.handle_plan)
-        print("[PlannerAgent] ✅ 已注册，监听 action='plan' 消息")
+        message_pool.subscribe("plan", self.handle_plan)
 
-    def handle_plan(self, message):
+    def handle_plan(self, message: dict):
         intent_text = message.get("intent_text", "")
         trace_id = message.get("trace_id", str(uuid.uuid4()))
-        print(f"[PlannerAgent] 接收到意图文本: {intent_text}")
+        print(f"[PlannerAgent] 收到意图: {intent_text}")
 
         try:
-            # 使用 LLM 解析意图为任务列表
             tasks = call_llm_for_planning(intent_text)
         except Exception as e:
-            print(f"[PlannerAgent] ❌ 调用 LLM 失败: {e}")
+            print(f"[PlannerAgent] ❌ LLM 任务拆解失败: {e}")
             return
 
-        # 注入公共字段并广播
         for task in tasks:
             task["sender"] = self.name
+            task["trace_id"] = trace_id
             task["timestamp"] = int(time.time())
             task["time_str"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-            task["trace_id"] = trace_id
             message_pool.publish(task)
 
 
 # 文件路径: ./backend/agents/qa_agent.py
-# backend/agents/qa_agent.py
+# # backend/agents/qa_agent.py
+# import time
+# from backend.agent_core.qa_manager import QAManager
+# from backend.coordinator.message_pool import message_pool
+
+# class QAAgent:
+#     def __init__(self):
+#         self.manager = QAManager()
+        
+#     def receive(self, message: dict):
+#         action = message.get("action")
+
+#         if action == "ping_test":
+#             output, repair_intent = self.manager.ping_test(message)
+#             message["_result"] = output
+#             if repair_intent:
+#                 print("[QAAgent] 发布自动修复流表: %s" % repair_intent)
+#                 message_pool.publish(repair_intent,sender="QAAgent")
+#             return True
+
+#         elif action == "ping_all":
+#             result = self.manager.ping_all()
+#             message["_result"] = result
+#             return True
+
+#         elif action == "verify_bandwidth":
+#             result = self.manager.verify_bandwidth(message)
+#             message["_result"] = result
+#             return True
+
+#         else:
+#             return False
+
 import time
 from backend.agent_core.qa_manager import QAManager
 from backend.coordinator.message_pool import message_pool
@@ -1333,84 +1426,76 @@ from backend.coordinator.message_pool import message_pool
 class QAAgent:
     def __init__(self):
         self.manager = QAManager()
-        
-    def receive(self, message: dict):
-        action = message.get("action")
+        message_pool.subscribe("ping_test", self.handle_ping_test)
+        message_pool.subscribe("ping_all", self.handle_ping_all)
+        message_pool.subscribe("verify_bandwidth", self.handle_verify_bw)
 
-        if action == "ping_test":
-            output, repair_intent = self.manager.ping_test(message)
-            message["_result"] = output
-            if repair_intent:
-                print("[QAAgent] 发布自动修复流表: %s" % repair_intent)
-                message_pool.publish(repair_intent,sender="QAAgent")
-            return True
+    def handle_ping_test(self, message: dict):
+        output, repair_intent = self.manager.ping_test(message)
+        message["_result"] = output
+        if repair_intent:
+            print("[QAAgent] 发布自动修复流表: %s" % repair_intent)
+            message_pool.publish(repair_intent, sender="QAAgent")
 
-        elif action == "ping_all":
-            result = self.manager.ping_all()
-            message["_result"] = result
-            return True
+    def handle_ping_all(self, message: dict):
+        result = self.manager.ping_all()
+        message["_result"] = result
 
-        elif action == "verify_bandwidth":
-            result = self.manager.verify_bandwidth(message)
-            message["_result"] = result
-            return True
+    def handle_verify_bw(self, message: dict):
+        result = self.manager.verify_bandwidth(message)
+        message["_result"] = result
 
-        else:
-            return False
-
-    def construct_fix_flow(self, info: dict) -> dict:
-        """构造修复流表的指令"""
-        print("🔧 QAAgent 发现 ping 失败，准备自动触发 FlowAgent 修复")
-        src = info["src"]
-        dst = info["dst"]
-        dst_ip = info["dst_ip"]
-
-        return {
-            "action": "install_flowtable",
-            "switches": ["s1"],  # 你可以根据拓扑智能指定
-            "extra": {
-                "match": {
-                    "eth_type": 2048,
-                    "ipv4_src": src,
-                    "ipv4_dst": dst_ip,
-                    "ip_proto": 1
-                },
-                "actions": "ALLOW",
-                "priority": 100
-            },
-            "_from": "qa_agent",
-            "_timestamp": time.time()
-        }
 
 
 # 文件路径: ./backend/agents/topology_agent.py
+# from backend.agent_core.topology_manager import TopologyManager
+
+# class TopologyAgent:
+#     def __init__(self):
+#         self.manager = TopologyManager()
+
+#     def receive(self, message: dict) -> bool:
+#         action = message.get("action")
+
+#         if action == "create_topology":
+#             result = self.manager.create_topology(message)
+#             message["_result"] = result
+#             return True
+
+#         elif action == "link_down":
+#             result = self.manager.link_down(message)
+#             message["_result"] = result
+#             return True
+
+#         elif action == "link_up":
+#             result = self.manager.link_up(message)
+#             message["_result"] = result
+#             return True
+
+#         return False
+        
+from backend.coordinator.message_pool import message_pool
 from backend.agent_core.topology_manager import TopologyManager
 
 class TopologyAgent:
     def __init__(self):
         self.manager = TopologyManager()
+        message_pool.subscribe("create_topology", self.handle_create)
+        message_pool.subscribe("link_down", self.handle_link_down)
+        message_pool.subscribe("link_up", self.handle_link_up)
 
-    def receive(self, message: dict) -> bool:
-        action = message.get("action")
+    def handle_create(self, message: dict):
+        result = self.manager.create_topology(message)
+        message["_result"] = result
 
-        if action == "create_topology":
-            result = self.manager.create_topology(message)
-            message["_result"] = result
-            return True
+    def handle_link_down(self, message: dict):
+        result = self.manager.link_down(message)
+        message["_result"] = result
 
-        elif action == "link_down":
-            result = self.manager.link_down(message)
-            message["_result"] = result
-            return True
-
-        elif action == "link_up":
-            result = self.manager.link_up(message)
-            message["_result"] = result
-            return True
-
-        return False
-        
-    
+    def handle_link_up(self, message: dict):
+        result = self.manager.link_up(message)
+        message["_result"] = result
+   
 
 
 # 文件路径: ./backend/agents/prompts/intent_agent.txt
@@ -2096,95 +2181,158 @@ PLANNER_SYSTEM_PROMPT = """
 
 
 # 文件路径: ./backend/coordinator/coordinator_agent.py
-# coordinator_agent.py
+# # coordinator_agent.py
+# from backend.agents.flow_agent import FlowAgent
+# from backend.agents.qa_agent import QAAgent
+# from backend.agents.topology_agent import TopologyAgent
+# from backend.agents.planner_agent import PlannerAgent
+# from backend.coordinator.message_pool import message_pool
+
+# # 协调型Agent
+# class CoordinatorAgent:
+#     def __init__(self):
+#         self.message_pool = message_pool
+#         # 初始化并注册各 Agent
+#         self.agents = {
+#             "create_topology": TopologyAgent(),
+#             "install_flowtable": FlowAgent(),
+#             "delete_flowtable": FlowAgent(),
+#             "get_flowtable": FlowAgent(),
+#             "ping_test": QAAgent(),
+#             "ping_all": QAAgent(),
+#             "verify_bandwidth": QAAgent(),
+#             "link_down": TopologyAgent(),
+#             "link_up": TopologyAgent()
+#         }
+#         for agent in self.agents.values():
+#             self.message_pool.subscribe(agent)
+
+#         # ✅ 单独注册 规划型Agent:PlannerAgent
+#         self.planner_agent = PlannerAgent()
+#         self.message_pool.subscribe(self.planner_agent)
+
+
+#     def handle_instruction_list(self, instructions: list) -> list:
+#         results = []
+#         for instr in instructions:
+#             self.message_pool.publish(instr,sender="CoordinatorAgent")
+#             result = instr.get("_result", "⚠️ 无结果")
+#             results.append(result)
+#         return results
+
 from backend.agents.flow_agent import FlowAgent
 from backend.agents.qa_agent import QAAgent
 from backend.agents.topology_agent import TopologyAgent
 from backend.agents.planner_agent import PlannerAgent
 from backend.coordinator.message_pool import message_pool
 
-# 协调型Agent
+# 协调型 Agent（负责初始化、统一发布指令）
 class CoordinatorAgent:
     def __init__(self):
-        self.message_pool = message_pool
-        # 初始化并注册各 Agent
-        self.agents = {
-            "create_topology": TopologyAgent(),
-            "install_flowtable": FlowAgent(),
-            "delete_flowtable": FlowAgent(),
-            "get_flowtable": FlowAgent(),
-            "ping_test": QAAgent(),
-            "ping_all": QAAgent(),
-            "verify_bandwidth": QAAgent(),
-            "link_down": TopologyAgent(),
-            "link_up": TopologyAgent()
-        }
-        for agent in self.agents.values():
-            self.message_pool.subscribe(agent)
-
-        # ✅ 单独注册 规划型Agent:PlannerAgent
+        # 初始化所有 Agent（它们自己注册自己支持的 action）
+        self.flow_agent = FlowAgent()
+        self.qa_agent = QAAgent()
+        self.topo_agent = TopologyAgent()
         self.planner_agent = PlannerAgent()
-        self.message_pool.subscribe(self.planner_agent)
 
+        print("[CoordinatorAgent] ✅ 所有 Agent 已初始化")
 
     def handle_instruction_list(self, instructions: list) -> list:
         results = []
         for instr in instructions:
-            self.message_pool.publish(instr,sender="CoordinatorAgent")
+            message_pool.publish(instr, sender="CoordinatorAgent")
             result = instr.get("_result", "⚠️ 无结果")
             results.append(result)
         return results
 
 
 # 文件路径: ./backend/coordinator/message_pool.py
-# backend/coordinator/message_pool.py
+# # backend/coordinator/message_pool.py
 
-import time
-import uuid
-import json
-from datetime import datetime
+# import time
+# import uuid
+# import json
+# from datetime import datetime
+# class MessagePool:
+#     def __init__(self):
+#         self.subscribers = []  # 订阅者列表，每个 Agent 都会注册进来
+
+#     def subscribe(self, agent):
+#         if hasattr(agent, "receive"):
+#             self.subscribers.append(agent)
+#         else:
+#             raise ValueError(f"Agent {agent.__class__.__name__} 不支持 receive 方法")
+
+#     def publish(self, message: dict, sender: str = "System"):
+#         """
+#         将一条 message 广播给所有 agent
+#         自动补充 sender、timestamp、trace_id 等元信息
+#         Agent 可选择是否处理该 message
+#         处理结果由 Agent 在 message 中写入 '_result' 字段（如果有）
+#         """
+#         # 注入元信息（若未已有）
+#         # 信息发起Agent，用于职责追踪
+#         message.setdefault("sender", sender)
+
+#         # 信息发起时间，用于排序/异常检测，精确时间（可用于排序、计算）
+#         message.setdefault("timestamp", time.time())
+#         # 作用同上，方便开发者阅读
+#         message["time_str"] = datetime.fromtimestamp(message["timestamp"]).strftime("%Y-%m-%d %H:%M:%S")
+
+#         #信息全局唯一id ，用于追踪一整条意图链、日志串联
+#         message.setdefault("trace_id", str(uuid.uuid4()))
+
+#         print("\n📨 [Message Published]")
+#         print(json.dumps(message, indent=2, ensure_ascii=False))  # ✅ 多行缩进显示
+#         print("-" * 50)  # 可选，分隔线
+
+#         for agent in self.subscribers:
+#             try:
+#                 handled = agent.receive(message)
+#                 if handled:
+#                     break
+#             except Exception as e:
+#                 print(f"[MessagePool] Agent_Name:{agent.__class__.__name__} 处理异常: {e}")
+
+# # 创建全局实例
+# message_pool = MessagePool()
+
+from collections import defaultdict
+from typing import Callable, Dict, List
+import time, uuid
 class MessagePool:
     def __init__(self):
-        self.subscribers = []  # 订阅者列表，每个 Agent 都会注册进来
+        self.subscribers: Dict[str, List[Callable[[dict], None]]] = defaultdict(list)
 
-    def subscribe(self, agent):
-        if hasattr(agent, "receive"):
-            self.subscribers.append(agent)
-        else:
-            raise ValueError(f"Agent {agent.__class__.__name__} 不支持 receive 方法")
+    def subscribe(self, action: str, callback: Callable[[dict], None]):
+        if not callable(callback):
+            raise ValueError(f"订阅失败，回调函数 {callback} 不是可调用对象")
+        self.subscribers[action].append(callback)
+        print(f"[MessagePool] ✅ 已订阅 action: {action} → {callback.__qualname__}")
 
-    def publish(self, message: dict, sender: str = "System"):
-        """
-        将一条 message 广播给所有 agent
-        自动补充 sender、timestamp、trace_id 等元信息
-        Agent 可选择是否处理该 message
-        处理结果由 Agent 在 message 中写入 '_result' 字段（如果有）
-        """
-        # 注入元信息（若未已有）
-        # 信息发起Agent，用于职责追踪
-        message.setdefault("sender", sender)
+    def publish(self, message: dict, sender: str = "Unknown"):
+        # ✅ 注入 sender、时间戳、trace_id
+        message["sender"] = sender
+        message["timestamp"] = int(time.time())
+        message["time_str"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        if "trace_id" not in message:
+            message["trace_id"] = str(uuid.uuid4())
 
-        # 信息发起时间，用于排序/异常检测，精确时间（可用于排序、计算）
-        message.setdefault("timestamp", time.time())
-        # 作用同上，方便开发者阅读
-        message["time_str"] = datetime.fromtimestamp(message["timestamp"]).strftime("%Y-%m-%d %H:%M:%S")
+        action = message.get("action")
+        if not action:
+            print("⚠️ 发布失败：消息缺少 action 字段")
+            return
+        if action not in self.subscribers:
+            print(f"⚠️ 无 Agent 订阅 action: {action}，已丢弃")
+            return
 
-        #信息全局唯一id ，用于追踪一整条意图链、日志串联
-        message.setdefault("trace_id", str(uuid.uuid4()))
-
-        print("\n📨 [Message Published]")
-        print(json.dumps(message, indent=2, ensure_ascii=False))  # ✅ 多行缩进显示
-        print("-" * 50)  # 可选，分隔线
-
-        for agent in self.subscribers:
+        for callback in self.subscribers[action]:
             try:
-                handled = agent.receive(message)
-                if handled:
-                    break
+                callback(message)
             except Exception as e:
-                print(f"[MessagePool] Agent_Name:{agent.__class__.__name__} 处理异常: {e}")
+                print(f"❌ 执行 action: {action} 回调失败: {e}")
 
-# 创建全局实例
+
 message_pool = MessagePool()
 
 

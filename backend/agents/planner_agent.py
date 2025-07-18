@@ -38,6 +38,7 @@ class PlannerAgent:
         message_pool.subscribe("plan", self.handle_plan)
 
     def handle_plan(self, message: dict):
+        print("[PlannerAgent] ✅ 接收到复合意图")
         intent_text = message.get("intent_text", "")
         trace_id = message.get("trace_id", str(uuid.uuid4()))
         print(f"[PlannerAgent] 收到意图: {intent_text}")

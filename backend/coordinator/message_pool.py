@@ -50,7 +50,7 @@
 
 from collections import defaultdict
 from typing import Callable, Dict, List
-import time, uuid
+import time, uuid, json
 class MessagePool:
     def __init__(self):
         self.subscribers: Dict[str, List[Callable[[dict], None]]] = defaultdict(list)
@@ -76,6 +76,13 @@ class MessagePool:
         if action not in self.subscribers:
             print(f"⚠️ 无 Agent 订阅 action: {action}，已丢弃")
             return
+
+        print("\n====== 📤 发布新消息到 message_pool ======")
+        print(f"Action: {action}")
+        print(f"Sender: {sender}")
+        print("Message:")
+        print(json.dumps(message, indent=2, ensure_ascii=False))
+        print("=========================================\n")
 
         for callback in self.subscribers[action]:
             try:
