@@ -24,6 +24,7 @@ Meta-IBN/
         agents/
             flow_agent.py
             intent_agent.py
+            planner_agent.py
             qa_agent.py
             topology_agent.py
             prompts/
@@ -32,6 +33,9 @@ Meta-IBN/
             flowtable_manager.py
             qa_manager.py
             topology_manager.py
+        llm/
+            llm_utils.py
+            prompt_templates.py
         coordinator/
             coordinator_agent.py
             message_pool.py
@@ -181,7 +185,7 @@ if __name__ == '__main__':
 
 
 # 文件路径: ./tmp/intent_log_path.txt
-/data/gjw/Meta-IBN/logs/topo_20250717_175154.jsonl
+/data/gjw/Meta-IBN/logs/topo_20250717_184148.jsonl
 
 # 文件路径: ./backend/__init__.py
 
@@ -1287,6 +1291,39 @@ class IntentAgent:
 
 
 
+# 文件路径: ./backend/agents/planner_agent.py
+import time
+import uuid
+from backend.llm_utils import call_llm_for_planning
+from backend.coordinator.message_pool import message_pool
+
+class PlannerAgent:
+    def __init__(self):
+        self.name = "PlannerAgent"
+        message_pool.register("plan", self.handle_plan)
+        print("[PlannerAgent] ✅ 已注册，监听 action='plan' 消息")
+
+    def handle_plan(self, message):
+        intent_text = message.get("intent_text", "")
+        trace_id = message.get("trace_id", str(uuid.uuid4()))
+        print(f"[PlannerAgent] 接收到意图文本: {intent_text}")
+
+        try:
+            # 使用 LLM 解析意图为任务列表
+            tasks = call_llm_for_planning(intent_text)
+        except Exception as e:
+            print(f"[PlannerAgent] ❌ 调用 LLM 失败: {e}")
+            return
+
+        # 注入公共字段并广播
+        for task in tasks:
+            task["sender"] = self.name
+            task["timestamp"] = int(time.time())
+            task["time_str"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+            task["trace_id"] = trace_id
+            message_pool.publish(task)
+
+
 # 文件路径: ./backend/agents/qa_agent.py
 # backend/agents/qa_agent.py
 import time
@@ -1305,7 +1342,7 @@ class QAAgent:
             message["_result"] = output
             if repair_intent:
                 print("[QAAgent] 发布自动修复流表: %s" % repair_intent)
-                message_pool.publish(repair_intent)
+                message_pool.publish(repair_intent,sender="QAAgent")
             return True
 
         elif action == "ping_all":
@@ -1810,7 +1847,7 @@ class QAManager:
             print("[QAAgent] 删除原有阻断规则: %s" % delete_intent)
             from backend.coordinator.message_pool import message_pool
             print("[qa_manager.py]成功引入消息池message_pool")
-            message_pool.publish(delete_intent)
+            message_pool.publish(delete_intent,sender="QAAgent")
 
             # ✅ 然后返回 install_intent 让调用方继续广播
             return final_result + "\n⚙️ 已触发自动修复（删除 + ALLOW）", install_intent
@@ -1988,13 +2025,85 @@ class TopologyManager:
             time.sleep(1)
         return False
 
+# 文件路径: ./backend/llm/llm_utils.py
+# backend/llm_utils.py
+
+from openai import OpenAI
+import json
+from backend.llm.prompt_templates import PLANNER_SYSTEM_PROMPT
+
+# 初始化 DeepSeek 客户端
+client = OpenAI(
+    api_key="sk-692005762cca46ac9faf28703ae6efe0",
+    base_url="https://api.deepseek.com"
+)
+
+def call_llm_for_planning(intent_text: str) -> list[dict]:
+    prompt = f"用户意图如下：\n{intent_text}\n请根据上述意图输出结构化指令列表（JSON 数组）。"
+
+    # 调用 chat 接口
+    response = client.chat.completions.create(
+        model="deepseek-chat",
+        messages=[
+            {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0.2
+    )
+
+    reply = response.choices[0].message.content
+
+    try:
+        return json.loads(reply)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"❌ JSON 解析失败: {e}\n原始输出:\n{reply}")
+
+
+# 文件路径: ./backend/llm/prompt_templates.py
+PLANNER_SYSTEM_PROMPT = """
+你是一个网络意图解析助手。用户会提供自然语言描述的操作目标，例如创建拓扑、测试主机连通性等。你需要将意图转化为结构化的 JSON 指令列表。
+
+支持的 action 类型如下：
+
+1. create_topology
+   - hosts: 主机列表，如 ["h1", "h2"]
+   - switches: 交换机列表，如 ["s1"]
+   - links: 链接列表，每条为 {{"src": "h1", "dst": "s1"}}
+   - controller: {{
+       "type": "RemoteController",
+       "ip": "127.0.0.1",
+       "port": 6633
+     }}
+
+2. ping_test
+   - hosts: 所涉及主机名列表，如 ["h1", "h2"]
+   - extra: {{
+       "source": 源主机名，如 "h1",
+       "target": 目标主机 IP 地址，如 "10.0.0.2",
+       "expect_result": "success" 或 "fail"，表示用户期望结果（可选）
+       "auto_fix": true 或 false，是否允许自动修复（可选）
+     }}
+
+返回格式要求：
+- 返回值必须是一个 JSON 数组；
+- 所有字段必须完整，禁止自然语言说明；
+- 指令顺序应符合用户意图顺序。
+
+【用户意图】：
+{intent_text}
+
+"""
+
+
 # 文件路径: ./backend/coordinator/coordinator_agent.py
 # coordinator_agent.py
 from backend.agents.flow_agent import FlowAgent
 from backend.agents.qa_agent import QAAgent
 from backend.agents.topology_agent import TopologyAgent
+from backend.agents.planner_agent import PlannerAgent
 from backend.coordinator.message_pool import message_pool
 
+# 协调型Agent
 class CoordinatorAgent:
     def __init__(self):
         self.message_pool = message_pool
@@ -2013,17 +2122,27 @@ class CoordinatorAgent:
         for agent in self.agents.values():
             self.message_pool.subscribe(agent)
 
+        # ✅ 单独注册 规划型Agent:PlannerAgent
+        self.planner_agent = PlannerAgent()
+        self.message_pool.subscribe(self.planner_agent)
+
+
     def handle_instruction_list(self, instructions: list) -> list:
         results = []
         for instr in instructions:
-            self.message_pool.publish(instr)
+            self.message_pool.publish(instr,sender="CoordinatorAgent")
             result = instr.get("_result", "⚠️ 无结果")
             results.append(result)
         return results
 
 
 # 文件路径: ./backend/coordinator/message_pool.py
-# 消息池
+# backend/coordinator/message_pool.py
+
+import time
+import uuid
+import json
+from datetime import datetime
 class MessagePool:
     def __init__(self):
         self.subscribers = []  # 订阅者列表，每个 Agent 都会注册进来
@@ -2034,21 +2153,40 @@ class MessagePool:
         else:
             raise ValueError(f"Agent {agent.__class__.__name__} 不支持 receive 方法")
 
-    def publish(self, message: dict):
+    def publish(self, message: dict, sender: str = "System"):
         """
         将一条 message 广播给所有 agent
+        自动补充 sender、timestamp、trace_id 等元信息
         Agent 可选择是否处理该 message
         处理结果由 Agent 在 message 中写入 '_result' 字段（如果有）
         """
+        # 注入元信息（若未已有）
+        # 信息发起Agent，用于职责追踪
+        message.setdefault("sender", sender)
+
+        # 信息发起时间，用于排序/异常检测，精确时间（可用于排序、计算）
+        message.setdefault("timestamp", time.time())
+        # 作用同上，方便开发者阅读
+        message["time_str"] = datetime.fromtimestamp(message["timestamp"]).strftime("%Y-%m-%d %H:%M:%S")
+
+        #信息全局唯一id ，用于追踪一整条意图链、日志串联
+        message.setdefault("trace_id", str(uuid.uuid4()))
+
+        print("\n📨 [Message Published]")
+        print(json.dumps(message, indent=2, ensure_ascii=False))  # ✅ 多行缩进显示
+        print("-" * 50)  # 可选，分隔线
+
         for agent in self.subscribers:
             try:
-                handled = agent.receive(message)  # 支持 None/False 表示未处理
+                handled = agent.receive(message)
                 if handled:
-                    break  # 一旦有 agent 成功处理，就不继续广播
+                    break
             except Exception as e:
                 print(f"[MessagePool] Agent_Name:{agent.__class__.__name__} 处理异常: {e}")
 
+# 创建全局实例
 message_pool = MessagePool()
+
 
 # 文件路径: ./backend/utils/__init__.py
 
