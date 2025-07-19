@@ -47,15 +47,19 @@ import uuid, time
 from typing import Optional
 
 # 协调型 Agent（负责初始化、统一发布指令）
+# 已弃用
 class CoordinatorAgent:
     def __init__(self):
         # 初始化所有 Agent（它们自己注册自己支持的 action）
-        self.flow_agent = FlowAgent()
-        self.qa_agent = QAAgent()
-        self.topo_agent = TopologyAgent()
-        self.planner_agent = PlannerAgent()
+        # self.flow_agent = FlowAgent()
+        # self.qa_agent = QAAgent()
+        # self.topo_agent = TopologyAgent()
+        # self.planner_agent = PlannerAgent()
 
-        print("[CoordinatorAgent] ✅ 所有 Agent 已初始化")
+        # print("[CoordinatorAgent] ✅ 所有 Agent 已初始化")
+        self.name = "CoordinatorAgent"
+        print("[CoordinatorAgent] ✅ 初始化完成（无订阅动作）")
+
 
     def handle_instruction_list(self, instructions: list, trace_id: Optional[str] = None) -> list:
         results = []

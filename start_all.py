@@ -18,6 +18,22 @@ import ryu.topology.switches
 # ✅ Flask App 导入
 from backend.api.app import app as flask_app
 
+from backend.coordinator.coordinator_agent import CoordinatorAgent
+from backend.agents.flow_agent import FlowAgent
+from backend.agents.qa_agent import QAAgent
+from backend.agents.topology_agent import TopologyAgent
+from backend.agents.planner_agent import PlannerAgent
+from backend.agents.intent_agent import IntentAgent
+
+def main():
+    # ✅ 初始化所有 Agent（独立，互不依赖）
+    flow_agent = FlowAgent()
+    qa_agent = QAAgent()
+    topo_agent = TopologyAgent()
+    planner_agent = PlannerAgent()
+    coordinator = CoordinatorAgent()
+    intent_agent = IntentAgent()
+    print("✅ 所有 Agent 初始化完成")
 
 # ✅ 设置 Ryu 日志写入文件（避免和 Flask 冲突）
 def setup_ryu_logging():
@@ -60,6 +76,7 @@ def start_flask():
 
 
 if __name__ == '__main__':
+    main()
     # ✅ 启动 Ryu（在子线程中）
     t1 = threading.Thread(target=start_ryu, daemon=True)
     t1.start()

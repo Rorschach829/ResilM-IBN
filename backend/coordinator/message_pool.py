@@ -61,7 +61,7 @@ class MessagePool:
         self.subscribers[action].append(callback)
         print(f"[MessagePool] ✅ 已订阅 action: {action} → {callback.__qualname__}")
 
-    def publish(self, message: dict, sender: str = "Unknown"):
+    def publish(self, message: dict, sender: str):
         # ✅ 注入 sender、时间戳、trace_id
         message["sender"] = sender
         message["timestamp"] = int(time.time())

@@ -52,7 +52,7 @@ class PlannerAgent:
 
         for task in tasks:
             print(f"[PlannerAgent] 📤 准备发布子任务: {task}")
-            send_intent(task, sender=self.name, trace_id=trace_id)
+            send_intent(task, sender="PlannerAgent", trace_id=trace_id)
         # for task in tasks:
         #     task["sender"] = self.name
         #     task["trace_id"] = trace_id
