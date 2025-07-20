@@ -2,7 +2,7 @@
 
 from openai import OpenAI
 import json
-from backend.llm.prompt_templates import PLANNER_SYSTEM_PROMPT
+# from backend.llm.prompt_templates import PLANNER_SYSTEM_PROMPT
 
 # 初始化 DeepSeek 客户端
 client = OpenAI(

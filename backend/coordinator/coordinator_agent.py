@@ -18,7 +18,7 @@ class CoordinatorAgent:
         results = []
         trace_id = str(uuid.uuid4())  # ✅ 统一生成 trace_id 给本轮指令
         for instr in instructions:
-            send_intent(instr, sender="CoordinatorAgent", trace_id=trace_id)
+            send_intent(instr, sender="IntentAgent", trace_id=trace_id)
             result = instr.get("_result", "⚠️ 无结果")
             results.append(result)
         return results

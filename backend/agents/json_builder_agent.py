@@ -4,11 +4,14 @@ from backend.utils.utils import extract_json_from_response
 from backend.utils.messagepool_utils import send_intent
 from backend.coordinator.message_pool import message_pool
 import uuid, json, requests
+import re
+from typing import List, Optional
+
 
 class JSONBuilderAgent:
     def __init__(self):
         self.name = "JSONBuilderAgent"
-        message_pool.subscribe("plan_steps", self.handle_plan)
+        message_pool.subscribe("plan_steps", self.generate_json_instructions)
 
     def handle_plan(self, message: dict):
 
@@ -18,7 +21,7 @@ class JSONBuilderAgent:
 
         print(f"[JSONBuilderAgent] ✅ 批处理 {len(steps)} 条步骤")
 
-        # === 🧠 简洁判断：只要当前拓扑非空，就跳过创建步骤 ===
+        # === 跳过拓扑创建步骤，如果当前拓扑已存在 ===
         try:
             resp = requests.get("http://localhost:5000/topology", timeout=2)
             topo = resp.json()
@@ -31,19 +34,38 @@ class JSONBuilderAgent:
         except Exception as e:
             print(f"[JSONBuilderAgent] ⚠️ 无法访问拓扑接口，保留所有步骤: {e}")
 
-        # === 构建提示词 ===
-        prompt = self.build_batch_prompt(steps)
+        # === 自动提取路径信息上下文（如 h9 和 h10） ===
+        extra_context = None
+        host_matches = re.findall(r'\bh\d+\b', intent_text)
+        if len(host_matches) >= 2:
+            h1, h2 = host_matches[0], host_matches[1]
+            try:
+                resp = requests.get(f"http://localhost:5000/shortest_path?src={h1}&dst={h2}", timeout=2)
+                data = resp.json()
+                path = data.get("path", [])
+                if path:
+                    extra_context = f"{h1} 与 {h2} 之间的网络路径为：{' -> '.join(path)}。请根据此路径操作对应交换机上的流表。"
+                    print(f"[JSONBuilderAgent] ✅ 注入路径上下文: {extra_context}")
+            except Exception as e:
+                print(f"[JSONBuilderAgent] ⚠️ 查询 shortest_path 接口失败: {e}")
+
+        # === 构建 Prompt（用户步骤 + 路径上下文） ===
+        prompt = self.build_batch_prompt(steps, extra_context=extra_context)
+
+        # === 加载 system prompt 模板 ===
+        system_prompt = load_json_builder_prompt()
 
         messages = [
-            {"role": "system", "content": "你是网络 JSON 指令生成专家，只输出合法 JSON 数组"},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt}
         ]
 
         try:
             response = client.chat.completions.create(
-                model="deepseek-chat",
+                model="deepseek-chat",  # 你本地模型名
                 messages=messages,
-                stream=False
+                stream=False,
+                temperature=0.0
             )
             content = response.choices[0].message.content.strip()
             print(f"[JSONBuilderAgent] 📥 LLM 原始输出:\n{content}")
@@ -61,44 +83,45 @@ class JSONBuilderAgent:
         for instr in json_array:
             send_intent(instr, sender="JSONBuilderAgent", trace_id=trace_id)
 
-    # def handle_plan(self, message: dict):
-    #     steps = message.get("steps", [])
-    #     intent_text = message.get("intent_text", "")
-    #     trace_id = message.get("trace_id", str(uuid.uuid4()))
 
-    #     print(f"[JSONBuilderAgent] ✅ 批处理 {len(steps)} 条步骤")
-    #     prompt = self.build_batch_prompt(steps)
+    def generate_json_instructions(self, plan_instr: dict) -> list:
+        from backend.llm.prompt_templates import load_json_builder_prompt
+        from backend.llm.llm_utils import client
+        from backend.utils.utils import extract_json_from_response
 
-    #     messages = [
-    #         {"role": "system", "content": "你是网络 JSON 指令生成专家，只输出合法 JSON 数组"},
-    #         {"role": "user", "content": prompt}
-    #     ]
+        steps = plan_instr.get("steps", [])
+        intent_text = plan_instr.get("intent_text", "")
 
-    #     try:
-    #         response = client.chat.completions.create(
-    #             model="deepseek-chat",
-    #             messages=messages,
-    #             stream=False
-    #         )
-    #         content = response.choices[0].message.content.strip()
-    #         print(f"[JSONBuilderAgent] 📥 LLM 原始输出:\n{content}")
+        # 构建提示词
+        prompt = self.build_batch_prompt(steps)
+        system_prompt = load_json_builder_prompt()
 
-    #         # 
-    #         content = extract_json_from_response(content)
-    #         json_array = json.loads(content)
-    #     except Exception as e:
-    #         print(f"[JSONBuilderAgent] ❌ LLM 调用或解析失败: {e}")
-    #         return
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt}
+        ]
 
-    #     if not isinstance(json_array, list):
-    #         print("[JSONBuilderAgent] ❌ 返回结果不是 JSON 数组")
-    #         return
-
-    #     for instr in json_array:
-    #         send_intent(instr, sender="JSONBuilderAgent", trace_id=trace_id)
+        response = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=messages,
+            stream=False,
+            temperature=0.0
+        )
+        content = response.choices[0].message.content.strip()
+        content = extract_json_from_response(content)
+        return json.loads(content)
 
 
-    def build_batch_prompt(self, steps: list[str]) -> str:
-        base_prompt = load_json_builder_prompt()
-        steps_block = "\n".join([step.strip() for step in steps])
-        return f"{base_prompt}\n\n以下是操作步骤：\n{steps_block}"
+    def build_batch_prompt(self, steps: List[str], extra_context: Optional[str] = None) -> str:
+        prompt_lines = []
+        if extra_context:
+            prompt_lines.append(f"[上下文信息]\n{extra_context}\n")
+
+        prompt_lines.append("[用户意图步骤]")
+        for i, step in enumerate(steps, 1):
+            prompt_lines.append(f"{step}")
+        prompt_lines.append("\n请根据以上步骤，生成对应的结构化 JSON 指令数组。")
+
+        return "\n".join(prompt_lines)
+
+

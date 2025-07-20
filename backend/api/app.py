@@ -10,44 +10,91 @@ app = Flask(__name__,
             template_folder="/data/gjw/Meta-IBN/frontend/templates", 
             static_folder="/data/gjw/Meta-IBN/frontend/static")
 CORS(app, resources={r"/*": {"origins": "*"}})
-
+from backend.utils.messagepool_utils import send_intent
+from backend.agents.json_builder_agent import JSONBuilderAgent
 intent_agent = IntentAgent()
 
 @app.route("/")
 def index():
     return render_template("index.html")
 
+# @app.route("/intent", methods=["POST"])
+# def handle_intent():
+#     data = request.json
+#     intent_text = data.get("intent", "")
+
+#     # 意图为空则直接返回
+#     if not intent_text:
+#         return jsonify({"error": "意图内容不能为空"}), 400
+
+#     try:
+#         # 注意：现在是列表（无论一个还是多个）
+#         instructions = intent_agent.intent_to_instruction(intent_text)
+#         all_outputs = []
+
+#         for instr in instructions:
+#             output = execute_instruction(instr)
+#             log_intent(intent_text, instr, output)
+#             all_outputs.append({
+#                 "action": instr.get("action"),
+#                 "result": output
+#             })
+
+#     except Exception as e:
+#         return jsonify({"error": f"指令执行失败: {str(e)}"}), 500
+
+#     return jsonify({
+#         "message": "✅ 所有指令执行完成",
+#         "instruction": instructions,
+#         "output": all_outputs,
+#         "success": True
+#     })
+
 @app.route("/intent", methods=["POST"])
 def handle_intent():
     data = request.json
     intent_text = data.get("intent", "")
-
-    # 意图为空则直接返回
     if not intent_text:
         return jsonify({"error": "意图内容不能为空"}), 400
 
     try:
-        # 注意：现在是列表（无论一个还是多个）
         instructions = intent_agent.intent_to_instruction(intent_text)
         all_outputs = []
 
         for instr in instructions:
-            output = execute_instruction(instr)
-            log_intent(intent_text, instr, output)
-            all_outputs.append({
-                "action": instr.get("action"),
-                "result": output
-            })
+            action = instr.get("action", "")
+
+            if action == "plan_steps":
+                from backend.agents.json_builder_agent import JSONBuilderAgent
+                jb = JSONBuilderAgent()
+                json_instrs = jb.generate_json_instructions(instr)
+                steps = instr.get("steps", [])
+
+                for i, sub_instr in enumerate(json_instrs):
+                    result = execute_instruction(sub_instr)
+                    all_outputs.append({
+                        "step": steps[i] if i < len(steps) else None,
+                        "action": sub_instr.get("action"),
+                        "result": result
+                    })
+            else:
+                result = execute_instruction(instr)
+                all_outputs.append({
+                    "step": None,
+                    "action": instr.get("action"),
+                    "result": result
+                })
 
     except Exception as e:
         return jsonify({"error": f"指令执行失败: {str(e)}"}), 500
 
     return jsonify({
         "message": "✅ 所有指令执行完成",
-        "instruction": instructions,
         "output": all_outputs,
         "success": True
     })
+
+
 
 
 # 获取当前拓扑

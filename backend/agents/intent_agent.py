@@ -47,6 +47,7 @@ class IntentAgent:
             response = client.chat.completions.create(
                 model="deepseek-chat",
                 messages=messages,
+                temperature = 0.3,
                 stream=False
             )
             content = response.choices[0].message.content.strip()

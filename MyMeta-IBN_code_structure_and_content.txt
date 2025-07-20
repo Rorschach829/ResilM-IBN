@@ -1,7 +1,6 @@
 ### 目录结构（仅含 .py / .html / .txt 文件）###
 
 Meta-IBN/
-    MyMeta-IBN_code_structure_and_content.txt
     requirements.lock.txt
     start_all.py
     tmp/
@@ -57,9 +56,6 @@ Meta-IBN/
 
 
 ### 文件内容 ###
-
-# 文件路径: ./MyMeta-IBN_code_structure_and_content.txt
-
 
 # 文件路径: ./requirements.lock.txt
 annotated-types==0.7.0
@@ -204,7 +200,7 @@ if __name__ == '__main__':
 
 
 # 文件路径: ./tmp/intent_log_path.txt
-/data/gjw/Meta-IBN/logs/topo_20250720_161434.jsonl
+/data/gjw/Meta-IBN/logs/topo_20250720_194748.jsonl
 
 # 文件路径: ./backend/__init__.py
 
@@ -1274,6 +1270,7 @@ class IntentAgent:
             response = client.chat.completions.create(
                 model="deepseek-chat",
                 messages=messages,
+                temperature = 0.3,
                 stream=False
             )
             content = response.choices[0].message.content.strip()
@@ -1331,7 +1328,10 @@ from backend.llm.llm_utils import client
 from backend.utils.utils import extract_json_from_response
 from backend.utils.messagepool_utils import send_intent
 from backend.coordinator.message_pool import message_pool
-import uuid, json
+import uuid, json, requests
+import re
+from typing import List, Optional
+
 
 class JSONBuilderAgent:
     def __init__(self):
@@ -1339,32 +1339,66 @@ class JSONBuilderAgent:
         message_pool.subscribe("plan_steps", self.handle_plan)
 
     def handle_plan(self, message: dict):
+
         steps = message.get("steps", [])
         intent_text = message.get("intent_text", "")
         trace_id = message.get("trace_id", str(uuid.uuid4()))
 
         print(f"[JSONBuilderAgent] ✅ 批处理 {len(steps)} 条步骤")
-        prompt = self.build_batch_prompt(steps)
+
+        # === 跳过拓扑创建步骤，如果当前拓扑已存在 ===
+        try:
+            resp = requests.get("http://localhost:5000/topology", timeout=2)
+            topo = resp.json()
+            if len(topo.get("nodes", [])) > 0:
+                print("[JSONBuilderAgent] ✅ 当前拓扑非空，跳过拓扑创建步骤")
+                steps = [
+                    s for s in steps
+                    if not ("创建" in s and "拓扑" in s)
+                ]
+        except Exception as e:
+            print(f"[JSONBuilderAgent] ⚠️ 无法访问拓扑接口，保留所有步骤: {e}")
+
+        # === 自动提取路径信息上下文（如 h9 和 h10） ===
+        extra_context = None
+        host_matches = re.findall(r'\bh\d+\b', intent_text)
+        if len(host_matches) >= 2:
+            h1, h2 = host_matches[0], host_matches[1]
+            try:
+                resp = requests.get(f"http://localhost:5000/shortest_path?src={h1}&dst={h2}", timeout=2)
+                data = resp.json()
+                path = data.get("path", [])
+                if path:
+                    extra_context = f"{h1} 与 {h2} 之间的网络路径为：{' -> '.join(path)}。请根据此路径操作对应交换机上的流表。"
+                    print(f"[JSONBuilderAgent] ✅ 注入路径上下文: {extra_context}")
+            except Exception as e:
+                print(f"[JSONBuilderAgent] ⚠️ 查询 shortest_path 接口失败: {e}")
+
+        # === 构建 Prompt（用户步骤 + 路径上下文） ===
+        prompt = self.build_batch_prompt(steps, extra_context=extra_context)
+
+        # === 加载 system prompt 模板 ===
+        system_prompt = load_json_builder_prompt()
 
         messages = [
-            {"role": "system", "content": "你是网络 JSON 指令生成专家，只输出合法 JSON 数组"},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt}
         ]
 
         try:
             response = client.chat.completions.create(
-                model="deepseek-chat",
+                model="deepseek-chat",  # 你本地模型名
                 messages=messages,
-                stream=False
+                stream=False,
+                temperature=0.0
             )
             content = response.choices[0].message.content.strip()
             print(f"[JSONBuilderAgent] 📥 LLM 原始输出:\n{content}")
 
-            # 
             content = extract_json_from_response(content)
             json_array = json.loads(content)
         except Exception as e:
-            print(f"[JSONBuilderAgent] ❌ LLM 调用或解析失败: {e}")
+            print(f"[JSONBuilderAgent] ❌ LLM 调用或 JSON 解析失败: {e}")
             return
 
         if not isinstance(json_array, list):
@@ -1374,10 +1408,21 @@ class JSONBuilderAgent:
         for instr in json_array:
             send_intent(instr, sender="JSONBuilderAgent", trace_id=trace_id)
 
-    def build_batch_prompt(self, steps: list[str]) -> str:
-        base_prompt = load_json_builder_prompt()
-        steps_block = "\n".join([step.strip() for step in steps])
-        return f"{base_prompt}\n\n以下是操作步骤：\n{steps_block}"
+
+
+    def build_batch_prompt(self, steps: List[str], extra_context: Optional[str] = None) -> str:
+        prompt_lines = []
+        if extra_context:
+            prompt_lines.append(f"[上下文信息]\n{extra_context}\n")
+
+        prompt_lines.append("[用户意图步骤]")
+        for i, step in enumerate(steps, 1):
+            prompt_lines.append(f"{step}")
+        prompt_lines.append("\n请根据以上步骤，生成对应的结构化 JSON 指令数组。")
+
+        return "\n".join(prompt_lines)
+
+
 
 
 # 文件路径: ./backend/agents/qa_agent.py
@@ -1511,6 +1556,18 @@ class TopologyAgent:
 
 你将接收多个网络配置步骤（Step 1、Step 2、...），每个步骤是一条清晰的操作指令。你的任务是将每条步骤分别转化为结构化 JSON 指令，并将所有指令组成一个 JSON 数组返回。
 
+##注意:每条指令必须是以下 action 类型之一：
+- create_topology
+- install_flowtable
+- delete_flowtable
+- ping_test
+- get_flowtable
+- limit_bandwidth
+- verify_bandwidth
+- clear_bandwidth_limit
+- link_down
+- link_up
+- ping_all
 ---
 
 【输出要求】：
@@ -1527,6 +1584,7 @@ class TopologyAgent:
 【支持的 action 类型说明】
 
 1. create_topology
+##一定要包含以下几个此条
 - hosts: ["h1", "h2"]
 - switches: ["s1"]
 - links: [{{"src": "h1", "dst": "s1"}}, {{"src": "h2", "dst": "s1"}}]
@@ -1564,31 +1622,8 @@ class TopologyAgent:
    - extra: {{
        "source": 源主机名，如 "h1",
        "target": 目标主机 IP 地址，如 "10.0.0.2",
-       "expect_result": "success" 或 "fail"，表示用户期望结果（可选）
-       "auto_fix": true 或 false，是否允许自动修复（可选）
      }}
 
-示例 1（用户明确表示期望两主机通信，若不通请修复）：
-{{
-  "action": "ping_test",
-  "hosts": ["h1", "h2"],
-  "extra": {{
-    "source": "h1",
-    "target": "10.0.0.2",
-    "expect_result": "success",
-    "auto_fix": true
-  }}
-}}
-
-示例 2（用户若只是想测试两主机的连通性则输出如下）：
-{{
-  "action": "ping_test",
-  "hosts": ["h1", "h2"],
-  "extra": {{
-    "source": "h1",
-    "target": "10.0.0.2"
-  }}
-}}
 
 5. get_flowtable
     - switches: 要查看的交换机列表,如["s1"]
@@ -2151,7 +2186,7 @@ class TopologyManager:
 
 from openai import OpenAI
 import json
-from backend.llm.prompt_templates import PLANNER_SYSTEM_PROMPT
+# from backend.llm.prompt_templates import PLANNER_SYSTEM_PROMPT
 
 # 初始化 DeepSeek 客户端
 client = OpenAI(
@@ -2185,13 +2220,13 @@ client = OpenAI(
 
 from pathlib import Path
 
-PROMPT_FILE_PATH = Path("/data/gjw/Meta-IBN/backend/agents/prompts/planner_agent.txt")
+# PROMPT_FILE_PATH = Path("/data/gjw/Meta-IBN/backend/agents/prompts/planner_agent.txt")
 
-try:
-    PLANNER_SYSTEM_PROMPT = PROMPT_FILE_PATH.read_text(encoding='utf-8')
-except Exception as e:
-    PLANNER_SYSTEM_PROMPT = "⚠️ [Prompt 加载失败] 请检查 planner_agent.txt 是否存在并可读"
-    print(f"[Prompt Load Error] {e}")
+# try:
+#     PLANNER_SYSTEM_PROMPT = PROMPT_FILE_PATH.read_text(encoding='utf-8')
+# except Exception as e:
+#     PLANNER_SYSTEM_PROMPT = "⚠️ [Prompt 加载失败] 请检查 planner_agent.txt 是否存在并可读"
+#     print(f"[Prompt Load Error] {e}")
 
 
 # 加载json_builder_agent的提示词
@@ -2222,7 +2257,7 @@ class CoordinatorAgent:
         results = []
         trace_id = str(uuid.uuid4())  # ✅ 统一生成 trace_id 给本轮指令
         for instr in instructions:
-            send_intent(instr, sender="CoordinatorAgent", trace_id=trace_id)
+            send_intent(instr, sender="IntentAgent", trace_id=trace_id)
             result = instr.get("_result", "⚠️ 无结果")
             results.append(result)
         return results
@@ -2436,14 +2471,6 @@ def log_intent(intent_text: str, instruction: dict, result: str):
 import uuid
 import time
 from backend.coordinator.message_pool import message_pool
-
-# def send_intent(message: dict, sender: str = "CoordinatorAgent", trace_id: str = None):
-#     message.setdefault("sender", sender)
-#     message.setdefault("trace_id", trace_id or str(uuid.uuid4()))
-#     message.setdefault("timestamp", int(time.time()))
-#     message.setdefault("time_str", time.strftime("%Y-%m-%d %H:%M:%S"))
-#     print(f"[{sender}] 📤 向 message_pool 发送消息（action={message.get('action')}）")
-#     message_pool.publish(message)
 
 def send_intent(message: dict, sender: str = "GJW", trace_id: str = None):
     message["sender"] = sender  # ✅ 强制设置，不用 setdefault

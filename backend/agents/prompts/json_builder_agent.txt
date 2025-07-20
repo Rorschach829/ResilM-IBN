@@ -2,6 +2,18 @@
 
 你将接收多个网络配置步骤（Step 1、Step 2、...），每个步骤是一条清晰的操作指令。你的任务是将每条步骤分别转化为结构化 JSON 指令，并将所有指令组成一个 JSON 数组返回。
 
+##注意:每条指令必须是以下 action 类型之一：
+- create_topology
+- install_flowtable
+- delete_flowtable
+- ping_test
+- get_flowtable
+- limit_bandwidth
+- verify_bandwidth
+- clear_bandwidth_limit
+- link_down
+- link_up
+- ping_all
 ---
 
 【输出要求】：
@@ -18,6 +30,7 @@
 【支持的 action 类型说明】
 
 1. create_topology
+##一定要包含以下几个此条
 - hosts: ["h1", "h2"]
 - switches: ["s1"]
 - links: [{{"src": "h1", "dst": "s1"}}, {{"src": "h2", "dst": "s1"}}]
@@ -55,31 +68,8 @@
    - extra: {{
        "source": 源主机名，如 "h1",
        "target": 目标主机 IP 地址，如 "10.0.0.2",
-       "expect_result": "success" 或 "fail"，表示用户期望结果（可选）
-       "auto_fix": true 或 false，是否允许自动修复（可选）
      }}
 
-示例 1（用户明确表示期望两主机通信，若不通请修复）：
-{{
-  "action": "ping_test",
-  "hosts": ["h1", "h2"],
-  "extra": {{
-    "source": "h1",
-    "target": "10.0.0.2",
-    "expect_result": "success",
-    "auto_fix": true
-  }}
-}}
-
-示例 2（用户若只是想测试两主机的连通性则输出如下）：
-{{
-  "action": "ping_test",
-  "hosts": ["h1", "h2"],
-  "extra": {{
-    "source": "h1",
-    "target": "10.0.0.2"
-  }}
-}}
 
 5. get_flowtable
     - switches: 要查看的交换机列表,如["s1"]

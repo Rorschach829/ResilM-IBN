@@ -120,25 +120,34 @@
 
             if (Array.isArray(data.output)) {
               resultText = data.output.map((item, idx) => {
-                return `🔹 [第 ${idx + 1} 条指令]\n类型: ${item.action}\n结果:\n${item.result}`;
+                const stepText = item.step
+                  ? `🧩 ${item.step}`
+                  : `🔹 [第 ${idx + 1} 条指令]\n类型: ${item.action}`;
+                return `${stepText}\n结果:\n${item.result}`;
               }).join("\n\n");
+
+              // ✅ 检查是否需要刷新拓扑图
+              const hasTopologyChange = data.output.some(item =>
+                ["create_topology", "install_flowtable"].includes(item.action)
+              );
+              if (hasTopologyChange) {
+                loadTopology();
+              }
+
             } else {
-              // fallback，兼容旧结构
-              resultText = typeof data.output === 'object' && data.output?.interpretation
-                ? data.output.interpretation
-                : data.output;
+              // fallback：兼容旧结构
+              resultText =
+                typeof data.output === "object" && data.output?.interpretation
+                  ? data.output.interpretation
+                  : data.output;
             }
 
-text += `${resultText}\n🕒 时间: ${now}\n\n`;
-
+            text += `${resultText}\n🕒 时间: ${now}\n\n`;
             inputs[i].style.backgroundColor = "#d2f8d2";
-
-            if (["create_topology", "install_flowtable"].includes(data.instruction.action)) {
-              loadTopology();
-            }
           }
 
           results.push(text);
+
         } catch (err) {
           results.push(`❌ 第 ${i + 1} 条意图请求失败：${err}\n\n`);
           inputs[i].style.backgroundColor = "#fdd";
@@ -147,6 +156,7 @@ text += `${resultText}\n🕒 时间: ${now}\n\n`;
 
       document.getElementById("batch-response").textContent = results.join("\n");
     }
+
 
     async function stopTopology() {
       const confirmed = confirm("你确定要退出并删除当前拓扑吗？");
