@@ -26,3 +26,14 @@ def is_cyclic_topology(links: list) -> bool:
         if src and dst:
             G.add_edge(src, dst)
     return not nx.is_tree(G)  # 非树即有环
+
+def extract_json_from_response(content: str) -> str:
+    """
+    去除 markdown 格式包裹，提取出纯 JSON 字符串
+    """
+    if content.startswith("```"):
+        content = content.strip("`")
+        lines = content.splitlines()
+        if lines and lines[0].startswith("json"):
+            content = "\n".join(lines[1:])
+    return content.strip()

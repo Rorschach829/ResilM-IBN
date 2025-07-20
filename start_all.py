@@ -22,7 +22,7 @@ from backend.coordinator.coordinator_agent import CoordinatorAgent
 from backend.agents.flow_agent import FlowAgent
 from backend.agents.qa_agent import QAAgent
 from backend.agents.topology_agent import TopologyAgent
-from backend.agents.planner_agent import PlannerAgent
+from backend.agents.json_builder_agent import JSONBuilderAgent
 from backend.agents.intent_agent import IntentAgent
 
 def main():
@@ -30,8 +30,8 @@ def main():
     flow_agent = FlowAgent()
     qa_agent = QAAgent()
     topo_agent = TopologyAgent()
-    planner_agent = PlannerAgent()
-    coordinator = CoordinatorAgent()
+    json_builder_agent = JSONBuilderAgent()
+    # coordinator = CoordinatorAgent()
     intent_agent = IntentAgent()
     print("✅ 所有 Agent 初始化完成")
 
