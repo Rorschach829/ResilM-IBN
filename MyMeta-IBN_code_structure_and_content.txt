@@ -29,6 +29,7 @@ Meta-IBN/
             topology_agent.py
             prompts/
                 intent_agent.txt
+                planner_agent.txt
         agent_core/
             flowtable_manager.py
             qa_manager.py
@@ -43,6 +44,7 @@ Meta-IBN/
             __init__.py
             arp_utils.py
             logger.py
+            messagepool_utils.py
             ryu_utils.py
             token_utils.py
             topology_utils.py
@@ -134,6 +136,22 @@ import ryu.topology.switches
 # ✅ Flask App 导入
 from backend.api.app import app as flask_app
 
+from backend.coordinator.coordinator_agent import CoordinatorAgent
+from backend.agents.flow_agent import FlowAgent
+from backend.agents.qa_agent import QAAgent
+from backend.agents.topology_agent import TopologyAgent
+from backend.agents.planner_agent import PlannerAgent
+from backend.agents.intent_agent import IntentAgent
+
+def main():
+    # ✅ 初始化所有 Agent（独立，互不依赖）
+    flow_agent = FlowAgent()
+    qa_agent = QAAgent()
+    topo_agent = TopologyAgent()
+    planner_agent = PlannerAgent()
+    coordinator = CoordinatorAgent()
+    intent_agent = IntentAgent()
+    print("✅ 所有 Agent 初始化完成")
 
 # ✅ 设置 Ryu 日志写入文件（避免和 Flask 冲突）
 def setup_ryu_logging():
@@ -176,6 +194,7 @@ def start_flask():
 
 
 if __name__ == '__main__':
+    main()
     # ✅ 启动 Ryu（在子线程中）
     t1 = threading.Thread(target=start_ryu, daemon=True)
     t1.start()
@@ -185,7 +204,7 @@ if __name__ == '__main__':
 
 
 # 文件路径: ./tmp/intent_log_path.txt
-/data/gjw/Meta-IBN/logs/topo_20250718_104405.jsonl
+/data/gjw/Meta-IBN/logs/topo_20250719_183621.jsonl
 
 # 文件路径: ./backend/__init__.py
 
@@ -528,7 +547,8 @@ def build_mininet_code_from_json(data: dict, enable_stp: bool = True) -> str:
     lines.append("")
     lines.append("# 动态添加链路")
     for link in links:
-        print("📌 实际Link:", link)
+        # 以下打印仅供测试用
+        # print("📌 实际Link:", link)
         lines.append(f"net.addLink({link['src']}, {link['dst']})")
 
     lines += [
@@ -540,18 +560,18 @@ def build_mininet_code_from_json(data: dict, enable_stp: bool = True) -> str:
         "    h.cmd('sysctl -w net.ipv6.conf.all.disable_ipv6=1')",
         "",
         "# 显示动态网络信息",
-        "print('\\n=== 动态网络拓扑信息 ===')",
+        "print('\\n=== 动态网络拓扑信息已隐藏，可以mininet_manager手动打开 ===')",
         "print(f'主机数量: {len(hosts_info)}')",
-        "for host_name, info in hosts_info.items():",
-        "    print(f'{host_name}: {info[\"ip\"]} (MAC: {info[\"node\"].MAC()})')",
+        "#for host_name, info in hosts_info.items():",
+        "#    print(f'{host_name}: {info[\"ip\"]} (MAC: {info[\"node\"].MAC()})')",
         "",
         "print(f'\\n交换机数量: {len(switches_info)}')",
         "for switch_name, info in switches_info.items():",
         "    print(f'{switch_name}: DPID {info[\"dpid\"]} ({info[\"node\"].dpid})')",
         "",
-        "print('\\n=== 链路信息 ===')",
-        "for link in net.links:",
-        "    print(f'{link.intf1.node.name}({link.intf1.name}) <-> {link.intf2.node.name}({link.intf2.name})')",
+        "print('\\n=== 链路信息已隐藏，可在mininet_manager处打开 ===')",
+        "#for link in net.links:",
+        "#    print(f'{link.intf1.node.name}({link.intf1.name}) <-> {link.intf2.node.name}({link.intf2.name})')",
         "",
 
         f"if {str(enable_stp)}:",
@@ -598,10 +618,10 @@ def build_mininet_code_from_json(data: dict, enable_stp: bool = True) -> str:
         "add_arp_entries()",
         # "# 手动pingPairs ",
         "# 查看每台主机的 ARP 表",
-        "print('\\n=== 每台主机 ARP 表 ===')",
-        "for h in net.hosts:",
-        "    print(f'[{h.name}] ARP 表:')",
-        "    print(h.cmd('arp -n'))",
+        "print('\\n=== 每台主机 ARP 表已隐藏，可在mm处打开显示 ===')",
+        "#for h in net.hosts:",
+        "#    print(f'[{h.name}] ARP 表:')",
+        "#    print(h.cmd('arp -n'))",
         "",
         "",
         "# 提供进入CLI的选项",
@@ -1248,15 +1268,101 @@ class FlowAgent:
 
 
 # 文件路径: ./backend/agents/intent_agent.py
+# from openai import OpenAI
+# import json
+# import os
+# from backend.utils.messagepool_utils import send_intent
+# import uuid
+# from backend.utils.token_utils import record_tokens_from_response
+# client = OpenAI(api_key="sk-692005762cca46ac9faf28703ae6efe0", base_url="https://api.deepseek.com")
+
+# class IntentAgent:
+#     def __init__(self, prompt_path="/data/gjw/Meta-IBN/backend/agents/prompts/intent_agent.txt"):
+#         self.prompt_path = prompt_path
+
+#     def load_prompt_template(self) -> str:
+#         """
+#         从本地文本文件加载提示词模板
+#         """
+#         if not os.path.exists(self.prompt_path):
+#             raise FileNotFoundError(f"提示词文件不存在: {self.prompt_path}")
+#         with open(self.prompt_path, "r", encoding="utf-8") as f:
+#             return f.read()
+
+#     def build_prompt(self, intent_text: str) -> str:
+#         """
+#         替换模板中的 {intent_text} 变量
+#         """
+#         template = self.load_prompt_template()
+#         return template.format(intent_text=intent_text)
+        
+#     def intent_to_instruction(self, intent_text: str) -> dict:
+#       # 现将response赋值为None，防止调用出错
+#         response = None
+#         prompt = self.build_prompt(intent_text)
+#         messages = [
+#             {"role": "system", "content": "你是网络拓扑与控制指令生成助手，只输出JSON指令。"},
+#             {"role": "user", "content": prompt}
+#         ]
+
+#         try:
+#           response = client.chat.completions.create(
+#               model="deepseek-chat",
+#               messages=messages,
+#              stream=False
+#           )
+#           content = response.choices[0].message.content.strip()
+#         except Exception as e:
+#           print("LLM 错误:", e)
+
+#         # print("LLM 返回原始内容:\n", content)
+
+#         # 如果LLM有响应则获取当前token消耗量
+#         if response:
+#           record_tokens_from_response(response)
+#         else:
+#           raise Exception("LLM 响应为空，无法继续解析")
+#         # 清除 markdown 格式包裹
+#         if content.startswith("```"):
+#             content = content.strip("`")
+#             lines = content.splitlines()
+#             if lines and lines[0].startswith("json"):
+#                 content = "\n".join(lines[1:])  # 删除第一行 ```json
+
+#         print("LLM 返回清洗Markdown后内容:\n", content)
+
+#         if not content:
+#             raise Exception("LLM 返回为空，请检查提示词")
+
+#         # 尝试解析JSON，如果失败，抛异常提醒调试
+#         try:
+#             json_data = json.loads(content)
+#             if isinstance(json_data, dict):
+#                 return [json_data]  # 单指令包装成列表
+#             elif isinstance(json_data, list):
+#                 return json_data  # 多指令
+#             else:
+#                 raise Exception("返回内容既不是 JSON 对象也不是数组")
+#         except json.JSONDecodeError as e:
+#             raise Exception(f"LLM 返回内容不是有效JSON: {e}\n内容:\n{content}")
+
 from openai import OpenAI
 import json
 import os
+import uuid
+import time
+
 from backend.utils.token_utils import record_tokens_from_response
-client = OpenAI(api_key="sk-692005762cca46ac9faf28703ae6efe0", base_url="https://api.deepseek.com")
+from backend.utils.messagepool_utils import send_intent
+
+client = OpenAI(api_key="sk-692005762cca46ac9faf28703ae6efe0",
+                base_url="https://api.deepseek.com")
+
 
 class IntentAgent:
     def __init__(self, prompt_path="/data/gjw/Meta-IBN/backend/agents/prompts/intent_agent.txt"):
         self.prompt_path = prompt_path
+        self.name = "IntentAgent"
 
     def load_prompt_template(self) -> str:
         """
@@ -1273,9 +1379,11 @@ class IntentAgent:
         """
         template = self.load_prompt_template()
         return template.format(intent_text=intent_text)
-        
-    def intent_to_instruction(self, intent_text: str) -> dict:
-      # 现将response赋值为None，防止调用出错
+
+    def intent_to_instruction(self, intent_text: str) -> list[dict]:
+        """
+        将用户意图转换为结构化指令列表（不负责发送）
+        """
         response = None
         prompt = self.build_prompt(intent_text)
         messages = [
@@ -1284,46 +1392,58 @@ class IntentAgent:
         ]
 
         try:
-          response = client.chat.completions.create(
-              model="deepseek-chat",
-              messages=messages,
-             stream=False
-          )
-          content = response.choices[0].message.content.strip()
+            response = client.chat.completions.create(
+                model="deepseek-chat",
+                messages=messages,
+                stream=False
+            )
+            content = response.choices[0].message.content.strip()
         except Exception as e:
-          print("LLM 错误:", e)
+            raise Exception(f"LLM 请求失败: {e}")
 
-        # print("LLM 返回原始内容:\n", content)
-
-        # 如果LLM有响应则获取当前token消耗量
         if response:
-          record_tokens_from_response(response)
+            record_tokens_from_response(response)
         else:
-          raise Exception("LLM 响应为空，无法继续解析")
-        # 清除 markdown 格式包裹
+            raise Exception("LLM 响应为空，无法继续解析")
+
+        # 清除 markdown 包裹
         if content.startswith("```"):
             content = content.strip("`")
             lines = content.splitlines()
             if lines and lines[0].startswith("json"):
                 content = "\n".join(lines[1:])  # 删除第一行 ```json
 
-        print("LLM 返回清洗Markdown后内容:\n", content)
+        print("[IntentAgent] 🔄 LLM 返回清洗后的内容:\n", content)
 
         if not content:
             raise Exception("LLM 返回为空，请检查提示词")
 
-        # 尝试解析JSON，如果失败，抛异常提醒调试
         try:
             json_data = json.loads(content)
             if isinstance(json_data, dict):
-                return [json_data]  # 单指令包装成列表
+                return [json_data]
             elif isinstance(json_data, list):
-                return json_data  # 多指令
+                return json_data
             else:
                 raise Exception("返回内容既不是 JSON 对象也不是数组")
         except json.JSONDecodeError as e:
             raise Exception(f"LLM 返回内容不是有效JSON: {e}\n内容:\n{content}")
 
+    def send_instruction(self, intent_text: str):
+        """
+        核心入口：解析自然语言意图，转换为结构化指令，并统一发送到 message_pool
+        """
+        try:
+            instructions = self.intent_to_instruction(intent_text)
+        except Exception as e:
+            print(f"[IntentAgent] ❌ 指令解析失败: {e}")
+            return
+
+        trace_id = str(uuid.uuid4())
+        print(f"[IntentAgent] ✅ 拆解为 {len(instructions)} 条指令，trace_id={trace_id}")
+
+        for instr in instructions:
+            send_intent(instr, sender="IntentAgent", trace_id=trace_id)
 
 
 # 文件路径: ./backend/agents/planner_agent.py
@@ -1359,6 +1479,7 @@ class IntentAgent:
 #             message_pool.publish(task)
 from backend.coordinator.message_pool import message_pool
 from backend.llm.llm_utils import call_llm_for_planning
+from backend.utils.messagepool_utils import send_intent
 import time, uuid
 
 class PlannerAgent:
@@ -1367,6 +1488,7 @@ class PlannerAgent:
         message_pool.subscribe("plan", self.handle_plan)
 
     def handle_plan(self, message: dict):
+        print("[PlannerAgent] ✅ 接收到复合意图")
         intent_text = message.get("intent_text", "")
         trace_id = message.get("trace_id", str(uuid.uuid4()))
         print(f"[PlannerAgent] 收到意图: {intent_text}")
@@ -1378,11 +1500,16 @@ class PlannerAgent:
             return
 
         for task in tasks:
-            task["sender"] = self.name
-            task["trace_id"] = trace_id
-            task["timestamp"] = int(time.time())
-            task["time_str"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-            message_pool.publish(task)
+            print(f"[PlannerAgent] 📤 准备发布子任务: {task}")
+            send_intent(task, sender="PlannerAgent", trace_id=trace_id)
+        # for task in tasks:
+        #     task["sender"] = self.name
+        #     task["trace_id"] = trace_id
+        #     task["timestamp"] = int(time.time())
+        #     task["time_str"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        #     message_pool.publish(task)
+
+        
 
 
 # 文件路径: ./backend/agents/qa_agent.py
@@ -1422,7 +1549,7 @@ class PlannerAgent:
 import time
 from backend.agent_core.qa_manager import QAManager
 from backend.coordinator.message_pool import message_pool
-
+from backend.utils.messagepool_utils import send_intent
 class QAAgent:
     def __init__(self):
         self.manager = QAManager()
@@ -1435,7 +1562,9 @@ class QAAgent:
         message["_result"] = output
         if repair_intent:
             print("[QAAgent] 发布自动修复流表: %s" % repair_intent)
-            message_pool.publish(repair_intent, sender="QAAgent")
+            trace_id = message.get("trace_id")  # ⬅️ 拿到原始 ping_test 指令的 trace_id
+            repair_intent["triggered_by"] = message.get("sender", "Unknown")
+            send_intent(repair_intent, sender="QAAgent", trace_id=trace_id)
 
     def handle_ping_all(self, message: dict):
         result = self.manager.ping_all()
@@ -1483,7 +1612,7 @@ class TopologyAgent:
         message_pool.subscribe("create_topology", self.handle_create)
         message_pool.subscribe("link_down", self.handle_link_down)
         message_pool.subscribe("link_up", self.handle_link_up)
-
+        
     def handle_create(self, message: dict):
         result = self.manager.create_topology(message)
         message["_result"] = result
@@ -1499,6 +1628,177 @@ class TopologyAgent:
 
 
 # 文件路径: ./backend/agents/prompts/intent_agent.txt
+你是一个 SDN 网络专家，请根据用户输入的意图，提取并返回结构化指令（JSON格式），以便后端执行。
+
+输出要求：
+- 只返回纯 JSON，不包含任何 Markdown（例如 ```json）。
+- 所有字段必须符合格式规范，不能多也不能少。
+- 所有数字必须是十进制格式，禁止使用十六进制（例如 0x0800）。
+
+支持的指令类型（action）包括：
+1. create_topology
+   - hosts: 主机列表，如 ["h1", "h2"]
+   - switches: 交换机列表，如 ["s1"]
+   - links: 链接列表，每条为 {{"src": "h1", "dst": "s1"}}
+   - controller: {{
+       "type": "RemoteController",
+       "ip": "127.0.0.1",
+       "port": 6633
+     }}
+
+2. install_flowtable
+   - switches: 目标交换机列表，如 ["s1"]
+   - extra: {{
+       "match": {{
+         "dl_type": 2048,
+         "nw_src": "10.0.0.1",
+         "nw_dst": "10.0.0.2",
+         "nw_proto": 1
+       }},
+       "actions": "DENY" 或 "ALLOW",
+       "priority": 整数
+     }}
+
+3. delete_flowtable
+   - switches: 要操作的交换机列表，如 ["s1"]
+   - match: 匹配条件（必须和 install_flowtable 完全一致才能删除成功），必须包含：
+       - dl_type: 2048 （IP 层协议）
+       - nw_src: 源 IP 地址
+       - nw_dst: 目的 IP 地址
+       - nw_proto: 协议号，1 表示 ICMP（如需删除阻断 ping 的规则，必须设置为 1）
+
+4. ping_test
+   - hosts: 所涉及主机名列表，如 ["h1", "h2"]
+   - extra: {{
+       "source": 源主机名，如 "h1",
+       "target": 目标主机 IP 地址，如 "10.0.0.2",
+       "expect_result": "success" 或 "fail"，表示用户期望结果（可选）
+       "auto_fix": true 或 false，是否允许自动修复（可选）
+     }}
+
+示例 1（用户明确表示期望两主机通信，若不通请修复）：
+{{
+  "action": "ping_test",
+  "hosts": ["h1", "h2"],
+  "extra": {{
+    "source": "h1",
+    "target": "10.0.0.2",
+    "expect_result": "success",
+    "auto_fix": true
+  }}
+}}
+
+示例 2（用户若只是想测试两主机的连通性则输出如下）：
+{{
+  "action": "ping_test",
+  "hosts": ["h1", "h2"],
+  "extra": {{
+    "source": "h1",
+    "target": "10.0.0.2"
+  }}
+}}
+
+5. get_flowtable
+   - switches: 要查看的交换机列表,如["s1"]
+注意事项：
+- 所有字段必须严格符合格式，LLM 只输出符合 JSON 标准的对象，不包含说明、注释、空行或 Markdown 标记。
+- 不要出现 null、None 或空 key。
+- 输出的 JSON 结构必须和上述 action 类型相匹配，否则视为解析失败。
+
+6. limit_bandwidth
+   - src_host: 源主机名，如 "h1"
+   - dst_host: 目标主机名，如 "h2"
+   - rate_mbps: 限速速率，单位 Mbps（整数）
+说明：
+- 用户可能会使用“带宽”、“网速”、“速率”、“速度”等说法来表达 bandwidth；
+- 用户可能会说“10M”、“10Mbps”、“10兆”、“10兆每秒”，都视为 10 Mbps；
+- 请统一将结果输出为整数 Mbps 并填入 rate_mbps 字段。
+
+7. verify_bandwidth
+   - src_host: 源主机名，如 "h1"
+   - dst_host: 目标主机名，如 "h2"
+
+8. clear_bandwidth_limit
+   - host: 要取消限速的主机名，如 "h1"
+说明：
+- 此意图用于取消对指定主机的所有限速规则；
+- 实现方法是调用 `tc qdisc del dev hX-eth0 root` 命令。
+
+9. link_down
+   - link: 包含两个交换机名的数组，如 ["s1", "s3"]
+说明：
+- 当用户说“断开 s1 和 s3 之间的连接”、“切断 s1 与 s3 的链路”、“切断s1 到 s3 的连通性”等语句时，应判断为 link_down；
+- link 中的顺序不限；
+- 严格输出 link 字段为长度为 2 的字符串数组。
+
+10. link_up
+   - link: 包含两个交换机名的数组，如 ["s1", "s3"]
+说明：
+- 当用户说“恢复 s1 和 s3 之间的连接”、“恢复s1 与 s3 的链路”等语句时，应判断为link_up；
+- link 中的顺序不限；
+- 严格输出 link 字段为长度为 2 的字符串数组。
+
+11. ping_all
+   - 无参数，表示对当前网络中的所有主机执行 ping_all 连通性测试
+说明：
+- 用户可能会说“测试全部连通性”、“所有主机 ping 一下”、“检测网络连接状态”、“测试主机间连通性”等，都解析为 ping_all；
+- 输出 JSON 结构只需包含 {{ "action": "ping_all" }}
+
+12. plan
+   - intent_text: 表示原始的用户意图文本，后续将交由 PlannerAgent 拆解为多个指令。
+   - 示例：
+     {{
+       "action": "plan",
+       "intent_text": "创建一个 h1 到 h3 的拓扑，并阻断 h2 到 h3 的连接，同时限速 h1 到 h2 带宽为 10Mbps，再测试 h1 能否 ping 通 h3"
+     }}
+
+说明：
+- 当用户的自然语言意图包含多个步骤、多个目标，或者存在依赖顺序时，应返回 plan 指令；
+- 系统将把该 plan 结构化指令发送给 PlannerAgent 进行进一步拆解；
+- LLM 不应直接拆解为多条指令，而是交由 PlannerAgent 统一规划。
+
+额外说明：
+- 数组中的指令必须严格符合上面的 action 格式，每个对象为一个独立动作。
+
+示例：
+
+用户意图：
+创建一个包含 h1、h2 和 s1 的拓扑，并测试 h1 能否 ping 通 h2
+返回的json应该是：
+{{
+  "action": "plan",
+  "intent_text": "创建一个包含 h1、h2 和 s1 的拓扑，并测试 h1 能否 ping 通 h2"
+}}
+
+
+示例：
+
+当用户意图为：删除阻止 h1 ping h2 的流表规则
+返回 JSON应该是：
+{{
+  "action": "delete_flowtable",
+  "switches": ["s1"],
+  "match": {{
+    "dl_type": 2048,
+    "nw_src": "10.0.0.1",
+    "nw_dst": "10.0.0.2",
+    "nw_proto": 1
+  }}
+}}
+
+当用户意图为: 查看交换机s1的流表时
+返回 JSON应该是：
+{{
+  "action": "get_flowtable",
+  "switches": ["s1"]
+}}
+
+
+用户意图：
+{intent_text}
+
+
+# 文件路径: ./backend/agents/prompts/planner_agent.txt
 你是一个 SDN 网络专家，请根据用户输入的意图，提取并返回结构化指令（JSON格式），以便后端执行。
 
 输出要求：
@@ -1650,30 +1950,6 @@ class TopologyAgent:
     }}
   }}
 ]
-
-
-示例：
-
-当用户意图为：删除阻止 h1 ping h2 的流表规则
-返回 JSON应该是：
-{{
-  "action": "delete_flowtable",
-  "switches": ["s1"],
-  "match": {{
-    "dl_type": 2048,
-    "nw_src": "10.0.0.1",
-    "nw_dst": "10.0.0.2",
-    "nw_proto": 1
-  }}
-}}
-
-当用户意图为: 查看交换机s1的流表时
-返回 JSON应该是：
-{{
-  "action": "get_flowtable",
-  "switches": ["s1"]
-}}
-
 
 用户意图：
 {intent_text}
@@ -1854,6 +2130,7 @@ import re
 from backend.utils.topology_utils import get_path_switches, get_host_ip
 from backend.coordinator.message_pool import message_pool
 from typing import Optional, Tuple
+from backend.utils.messagepool_utils import send_intent
 class QAManager:
 
     def ping_test(self, instruction: dict) -> Tuple[str, Optional[dict]]:
@@ -1932,8 +2209,10 @@ class QAManager:
             print("[QAAgent] 删除原有阻断规则: %s" % delete_intent)
             from backend.coordinator.message_pool import message_pool
             print("[qa_manager.py]成功引入消息池message_pool")
-            message_pool.publish(delete_intent,sender="QAAgent")
-
+            
+            trace_id = instruction.get("trace_id")  # 🧠 保留上下文链路
+            send_intent(delete_intent, sender="QAAgent", trace_id=trace_id)
+            
             # ✅ 然后返回 install_intent 让调用方继续广播
             return final_result + "\n⚙️ 已触发自动修复（删除 + ALLOW）", install_intent
 
@@ -2145,39 +2424,17 @@ def call_llm_for_planning(intent_text: str) -> list[dict]:
 
 
 # 文件路径: ./backend/llm/prompt_templates.py
-PLANNER_SYSTEM_PROMPT = """
-你是一个网络意图解析助手。用户会提供自然语言描述的操作目标，例如创建拓扑、测试主机连通性等。你需要将意图转化为结构化的 JSON 指令列表。
+# backend/llm/prompt_templates.py
 
-支持的 action 类型如下：
+from pathlib import Path
 
-1. create_topology
-   - hosts: 主机列表，如 ["h1", "h2"]
-   - switches: 交换机列表，如 ["s1"]
-   - links: 链接列表，每条为 {{"src": "h1", "dst": "s1"}}
-   - controller: {{
-       "type": "RemoteController",
-       "ip": "127.0.0.1",
-       "port": 6633
-     }}
+PROMPT_FILE_PATH = Path("/data/gjw/Meta-IBN/backend/agents/prompts/planner_agent.txt")
 
-2. ping_test
-   - hosts: 所涉及主机名列表，如 ["h1", "h2"]
-   - extra: {{
-       "source": 源主机名，如 "h1",
-       "target": 目标主机 IP 地址，如 "10.0.0.2",
-       "expect_result": "success" 或 "fail"，表示用户期望结果（可选）
-       "auto_fix": true 或 false，是否允许自动修复（可选）
-     }}
-
-返回格式要求：
-- 返回值必须是一个 JSON 数组；
-- 所有字段必须完整，禁止自然语言说明；
-- 指令顺序应符合用户意图顺序。
-
-【用户意图】：
-{intent_text}
-
-"""
+try:
+    PLANNER_SYSTEM_PROMPT = PROMPT_FILE_PATH.read_text(encoding='utf-8')
+except Exception as e:
+    PLANNER_SYSTEM_PROMPT = "⚠️ [Prompt 加载失败] 请检查 planner_agent.txt 是否存在并可读"
+    print(f"[Prompt Load Error] {e}")
 
 
 # 文件路径: ./backend/coordinator/coordinator_agent.py
@@ -2225,22 +2482,30 @@ from backend.agents.qa_agent import QAAgent
 from backend.agents.topology_agent import TopologyAgent
 from backend.agents.planner_agent import PlannerAgent
 from backend.coordinator.message_pool import message_pool
+from backend.utils.messagepool_utils import send_intent
+import uuid, time
+from typing import Optional
 
 # 协调型 Agent（负责初始化、统一发布指令）
+# 已弃用
 class CoordinatorAgent:
     def __init__(self):
         # 初始化所有 Agent（它们自己注册自己支持的 action）
-        self.flow_agent = FlowAgent()
-        self.qa_agent = QAAgent()
-        self.topo_agent = TopologyAgent()
-        self.planner_agent = PlannerAgent()
+        # self.flow_agent = FlowAgent()
+        # self.qa_agent = QAAgent()
+        # self.topo_agent = TopologyAgent()
+        # self.planner_agent = PlannerAgent()
 
-        print("[CoordinatorAgent] ✅ 所有 Agent 已初始化")
+        # print("[CoordinatorAgent] ✅ 所有 Agent 已初始化")
+        self.name = "CoordinatorAgent"
+        print("[CoordinatorAgent] ✅ 初始化完成（无订阅动作）")
 
-    def handle_instruction_list(self, instructions: list) -> list:
+
+    def handle_instruction_list(self, instructions: list, trace_id: Optional[str] = None) -> list:
         results = []
+        trace_id = str(uuid.uuid4())  # ✅ 统一生成 trace_id 给本轮指令
         for instr in instructions:
-            message_pool.publish(instr, sender="CoordinatorAgent")
+            send_intent(instr, sender="CoordinatorAgent", trace_id=trace_id)
             result = instr.get("_result", "⚠️ 无结果")
             results.append(result)
         return results
@@ -2299,7 +2564,7 @@ class CoordinatorAgent:
 
 from collections import defaultdict
 from typing import Callable, Dict, List
-import time, uuid
+import time, uuid, json
 class MessagePool:
     def __init__(self):
         self.subscribers: Dict[str, List[Callable[[dict], None]]] = defaultdict(list)
@@ -2310,7 +2575,7 @@ class MessagePool:
         self.subscribers[action].append(callback)
         print(f"[MessagePool] ✅ 已订阅 action: {action} → {callback.__qualname__}")
 
-    def publish(self, message: dict, sender: str = "Unknown"):
+    def publish(self, message: dict, sender: str):
         # ✅ 注入 sender、时间戳、trace_id
         message["sender"] = sender
         message["timestamp"] = int(time.time())
@@ -2325,6 +2590,13 @@ class MessagePool:
         if action not in self.subscribers:
             print(f"⚠️ 无 Agent 订阅 action: {action}，已丢弃")
             return
+
+        print("\n====== 📤 发布新消息到 message_pool ======")
+        print(f"Action: {action}")
+        print(f"Sender: {sender}")
+        print("Message:")
+        print(json.dumps(message, indent=2, ensure_ascii=False))
+        print("=========================================\n")
 
         for callback in self.subscribers[action]:
             try:
@@ -2491,6 +2763,30 @@ def log_intent(intent_text: str, instruction: dict, result: str):
 
     with open(CURRENT_LOG_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(log_entry, ensure_ascii=False, indent=2) + "\n\n")
+
+
+# 文件路径: ./backend/utils/messagepool_utils.py
+import uuid
+import time
+from backend.coordinator.message_pool import message_pool
+
+# def send_intent(message: dict, sender: str = "CoordinatorAgent", trace_id: str = None):
+#     message.setdefault("sender", sender)
+#     message.setdefault("trace_id", trace_id or str(uuid.uuid4()))
+#     message.setdefault("timestamp", int(time.time()))
+#     message.setdefault("time_str", time.strftime("%Y-%m-%d %H:%M:%S"))
+#     print(f"[{sender}] 📤 向 message_pool 发送消息（action={message.get('action')}）")
+#     message_pool.publish(message)
+
+def send_intent(message: dict, sender: str = "GJW", trace_id: str = None):
+    message["sender"] = sender  # ✅ 强制设置，不用 setdefault
+    message["trace_id"] = trace_id or str(uuid.uuid4())
+    message["timestamp"] = int(time.time())
+    message["time_str"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{sender}] 📤 向 message_pool 发送消息（action={message.get('action')}）")
+    message_pool.publish(message,sender = sender)
+
+
 
 
 # 文件路径: ./backend/utils/ryu_utils.py
