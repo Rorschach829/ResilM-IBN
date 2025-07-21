@@ -1,6 +1,7 @@
 ### 目录结构（仅含 .py / .html / .txt 文件）###
 
 Meta-IBN/
+    MyMeta-IBN_code_structure_and_content.txt
     requirements.lock.txt
     start_all.py
     tmp/
@@ -56,6 +57,9 @@ Meta-IBN/
 
 
 ### 文件内容 ###
+
+# 文件路径: ./MyMeta-IBN_code_structure_and_content.txt
+
 
 # 文件路径: ./requirements.lock.txt
 annotated-types==0.7.0
@@ -200,7 +204,7 @@ if __name__ == '__main__':
 
 
 # 文件路径: ./tmp/intent_log_path.txt
-/data/gjw/Meta-IBN/logs/topo_20250720_194748.jsonl
+/data/gjw/Meta-IBN/logs/topo_20250720_205015.jsonl
 
 # 文件路径: ./backend/__init__.py
 
@@ -224,44 +228,91 @@ app = Flask(__name__,
             template_folder="/data/gjw/Meta-IBN/frontend/templates", 
             static_folder="/data/gjw/Meta-IBN/frontend/static")
 CORS(app, resources={r"/*": {"origins": "*"}})
-
+from backend.utils.messagepool_utils import send_intent
+from backend.agents.json_builder_agent import JSONBuilderAgent
 intent_agent = IntentAgent()
 
 @app.route("/")
 def index():
     return render_template("index.html")
 
+# @app.route("/intent", methods=["POST"])
+# def handle_intent():
+#     data = request.json
+#     intent_text = data.get("intent", "")
+
+#     # 意图为空则直接返回
+#     if not intent_text:
+#         return jsonify({"error": "意图内容不能为空"}), 400
+
+#     try:
+#         # 注意：现在是列表（无论一个还是多个）
+#         instructions = intent_agent.intent_to_instruction(intent_text)
+#         all_outputs = []
+
+#         for instr in instructions:
+#             output = execute_instruction(instr)
+#             log_intent(intent_text, instr, output)
+#             all_outputs.append({
+#                 "action": instr.get("action"),
+#                 "result": output
+#             })
+
+#     except Exception as e:
+#         return jsonify({"error": f"指令执行失败: {str(e)}"}), 500
+
+#     return jsonify({
+#         "message": "✅ 所有指令执行完成",
+#         "instruction": instructions,
+#         "output": all_outputs,
+#         "success": True
+#     })
+
 @app.route("/intent", methods=["POST"])
 def handle_intent():
     data = request.json
     intent_text = data.get("intent", "")
-
-    # 意图为空则直接返回
     if not intent_text:
         return jsonify({"error": "意图内容不能为空"}), 400
 
     try:
-        # 注意：现在是列表（无论一个还是多个）
         instructions = intent_agent.intent_to_instruction(intent_text)
         all_outputs = []
 
         for instr in instructions:
-            output = execute_instruction(instr)
-            log_intent(intent_text, instr, output)
-            all_outputs.append({
-                "action": instr.get("action"),
-                "result": output
-            })
+            action = instr.get("action", "")
+
+            if action == "plan_steps":
+                from backend.agents.json_builder_agent import JSONBuilderAgent
+                jb = JSONBuilderAgent()
+                json_instrs = jb.generate_json_instructions(instr)
+                steps = instr.get("steps", [])
+
+                for i, sub_instr in enumerate(json_instrs):
+                    result = execute_instruction(sub_instr)
+                    all_outputs.append({
+                        "step": steps[i] if i < len(steps) else None,
+                        "action": sub_instr.get("action"),
+                        "result": result
+                    })
+            else:
+                result = execute_instruction(instr)
+                all_outputs.append({
+                    "step": None,
+                    "action": instr.get("action"),
+                    "result": result
+                })
 
     except Exception as e:
         return jsonify({"error": f"指令执行失败: {str(e)}"}), 500
 
     return jsonify({
         "message": "✅ 所有指令执行完成",
-        "instruction": instructions,
         "output": all_outputs,
         "success": True
     })
+
+
 
 
 # 获取当前拓扑
@@ -1336,7 +1387,7 @@ from typing import List, Optional
 class JSONBuilderAgent:
     def __init__(self):
         self.name = "JSONBuilderAgent"
-        message_pool.subscribe("plan_steps", self.handle_plan)
+        message_pool.subscribe("plan_steps", self.generate_json_instructions)
 
     def handle_plan(self, message: dict):
 
@@ -1408,6 +1459,33 @@ class JSONBuilderAgent:
         for instr in json_array:
             send_intent(instr, sender="JSONBuilderAgent", trace_id=trace_id)
 
+
+    def generate_json_instructions(self, plan_instr: dict) -> list:
+        from backend.llm.prompt_templates import load_json_builder_prompt
+        from backend.llm.llm_utils import client
+        from backend.utils.utils import extract_json_from_response
+
+        steps = plan_instr.get("steps", [])
+        intent_text = plan_instr.get("intent_text", "")
+
+        # 构建提示词
+        prompt = self.build_batch_prompt(steps)
+        system_prompt = load_json_builder_prompt()
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt}
+        ]
+
+        response = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=messages,
+            stream=False,
+            temperature=0.0
+        )
+        content = response.choices[0].message.content.strip()
+        content = extract_json_from_response(content)
+        return json.loads(content)
 
 
     def build_batch_prompt(self, steps: List[str], extra_context: Optional[str] = None) -> str:
@@ -1533,6 +1611,7 @@ class TopologyAgent:
   "steps": [
     "Step 1: 测试h1和h2的连通性",
     "Step 2: 在控制器中安装流表规则，阻止 h1 发往 h2 的流量,优先级为100。",
+    "Step 3: 测试h1和h2的连通性"
   ]
 }}
 
@@ -1544,6 +1623,7 @@ class TopologyAgent:
    - 不要编造不合理的网络结构，保持实用性；
 3. 如果用户指令非常简单，只包含一步，也必须以 Step 1 输出；
 4. 严格输出标准 JSON，不允许 markdown、注释、空行；
+5.请勿生成无法执行的总结性步骤，如‘比较结果’、‘记录日志’、‘观察变化’等，仅保留可被系统执行的具体操作步骤。
 
 用户意图：
 {intent_text}
@@ -1637,8 +1717,8 @@ class TopologyAgent:
     - dst_host: 目标主机名，如 "h2"
     - rate_mbps: 限速速率，单位 Mbps（整数）
  说明：
- - 用户可能会使用“带宽”、“网速”、“速率”、“速度”等说法来表达 bandwidth；
- - 用户可能会说“10M”、“10Mbps”、“10兆”、“10兆每秒”，都视为 10 Mbps；
+ - 步骤可能会使用“带宽”、“网速”、“速率”、“速度”等说法来表达 bandwidth；
+ - 步骤可能会说“10M”、“10Mbps”、“10兆”、“10兆每秒”，都视为 10 Mbps；
  - 请统一将结果输出为整数 Mbps 并填入 rate_mbps 字段。
  
  7. verify_bandwidth
@@ -1654,14 +1734,14 @@ class TopologyAgent:
  9. link_down
     - link: 包含两个交换机名的数组，如 ["s1", "s3"]
  说明：
- - 当用户说“断开 s1 和 s3 之间的连接”、“切断 s1 与 s3 的链路”、“切断s1 到 s3 的连通性”等语句时，应判断为 link_down；
+ - 当步骤说“断开 s1 和 s3 之间的连接”、“切断 s1 与 s3 的链路”、“切断s1 到 s3 的连通性”等语句时，应判断为 link_down；
  - link 中的顺序不限；
  - 严格输出 link 字段为长度为 2 的字符串数组。
  
  10. link_up
     - link: 包含两个交换机名的数组，如 ["s1", "s3"]
  说明：
- - 当用户说“恢复 s1 和 s3 之间的连接”、“恢复s1 与 s3 的链路”等语句时，应判断为link_up；
+ - 当步骤说“恢复 s1 和 s3 之间的连接”、“恢复s1 与 s3 的链路”等语句时，应判断为link_up；
  - link 中的顺序不限；
  - 严格输出 link 字段为长度为 2 的字符串数组。
  
@@ -1742,7 +1822,7 @@ Step 3: 测试 h1 是否能 ping 通 h2；
 
 【额外规则说明】
 
-- 用户表达中如含多个步骤，系统会逐条调用本提示词构造 JSON，请你始终只处理当前的单个步骤；
+- 步骤表达中如含多个步骤，系统会逐条调用本提示词构造 JSON，请你始终只处理当前的单个步骤；
 - 不需要关心上下文，不要输出数组；
 - 请严格遵守字段名、格式和结构要求，任何不匹配都视为错误。
 
@@ -3042,25 +3122,34 @@ def build_and_send_all_path_intents(net):
 
             if (Array.isArray(data.output)) {
               resultText = data.output.map((item, idx) => {
-                return `🔹 [第 ${idx + 1} 条指令]\n类型: ${item.action}\n结果:\n${item.result}`;
+                const stepText = item.step
+                  ? `🧩 ${item.step}`
+                  : `🔹 [第 ${idx + 1} 条指令]\n类型: ${item.action}`;
+                return `${stepText}\n结果:\n${item.result}`;
               }).join("\n\n");
+
+              // ✅ 检查是否需要刷新拓扑图
+              const hasTopologyChange = data.output.some(item =>
+                ["create_topology", "install_flowtable"].includes(item.action)
+              );
+              if (hasTopologyChange) {
+                loadTopology();
+              }
+
             } else {
-              // fallback，兼容旧结构
-              resultText = typeof data.output === 'object' && data.output?.interpretation
-                ? data.output.interpretation
-                : data.output;
+              // fallback：兼容旧结构
+              resultText =
+                typeof data.output === "object" && data.output?.interpretation
+                  ? data.output.interpretation
+                  : data.output;
             }
 
-text += `${resultText}\n🕒 时间: ${now}\n\n`;
-
+            text += `${resultText}\n🕒 时间: ${now}\n\n`;
             inputs[i].style.backgroundColor = "#d2f8d2";
-
-            if (["create_topology", "install_flowtable"].includes(data.instruction.action)) {
-              loadTopology();
-            }
           }
 
           results.push(text);
+
         } catch (err) {
           results.push(`❌ 第 ${i + 1} 条意图请求失败：${err}\n\n`);
           inputs[i].style.backgroundColor = "#fdd";
@@ -3069,6 +3158,7 @@ text += `${resultText}\n🕒 时间: ${now}\n\n`;
 
       document.getElementById("batch-response").textContent = results.join("\n");
     }
+
 
     async function stopTopology() {
       const confirmed = confirm("你确定要退出并删除当前拓扑吗？");
