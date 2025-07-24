@@ -293,3 +293,63 @@ def get_output_port(switch_name: str, dst_ip: str, mm) -> Optional[int]:
 
     return edge["port"]
 
+# 已知某主机 IP，反查它挂在哪个交换机上（用于流表下发/删除自动推理）
+def get_access_switch_for_host(host_name: str) -> Optional[str]:
+    """从主机名反查其接入交换机"""
+    host = mm.global_net.get(host_name)
+    if not host:
+        return None
+
+    for intf in host.intfList():
+        if intf.link:
+            node1 = intf.link.intf1.node
+            node2 = intf.link.intf2.node
+            for node in (node1, node2):
+                if node.name != host.name and node.name.startswith("s"):
+                    return node.name
+    return None
+
+
+def get_access_switch_for_ip(ip: str) -> Optional[str]:
+    """从主机 IP 反查其接入交换机"""
+    host = mm.global_net_ip_map.get(ip)
+    if not host:
+        print(f"[get_access_switch_for_ip] 未找到 IP 对应主机: {ip}")
+        return None
+
+    return get_access_switch_for_host(host.name)
+
+def auto_fix_switches_by_intent(instruction: dict):
+    """
+    根据意图类型自动选择 switch 下发策略：
+    - 如果是 install_flowtable + DENY + ICMP（阻断 ping），则在路径上所有交换机下发
+    - 否则仅在目的主机接入交换机下发
+    """
+    match = instruction.get("extra", {}).get("match") or instruction.get("match", {})
+    action_type = instruction.get("action")
+    behavior = instruction.get("extra", {}).get("actions")
+
+    src_ip = match.get("nw_src")
+    dst_ip = match.get("nw_dst")
+    if not (src_ip and dst_ip):
+        print("[auto_fix] 缺失 IP 字段，跳过修复")
+        return
+
+    if src_ip not in mm.global_net_ip_map or dst_ip not in mm.global_net_ip_map:
+        print("[auto_fix] IP 未在网络中注册，跳过修复")
+        return
+
+    src_host = mm.global_net_ip_map[src_ip].name
+
+    if action_type == "install_flowtable" and behavior == "DENY" and match.get("nw_proto") == 1:
+        switches = get_path_switches(src_host, dst_ip)
+        print(f"[auto_fix] DENY ping，路径交换机为: {switches}")
+    else:
+        sw = get_access_switch_for_ip(dst_ip)
+        switches = [sw] if sw else []
+        print(f"[auto_fix] 默认使用目的交换机: {switches}")
+
+    if switches:
+        instruction["switches"] = switches
+    else:
+        print("[auto_fix] 未找到合适的 switches，保持原样")

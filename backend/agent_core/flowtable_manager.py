@@ -6,14 +6,16 @@ import backend.net_simulation.mininet_manager as mm
 from backend.utils.utils import convert_switch_name_to_dpid
 from backend.utils.ryu_utils import get_all_switch_ids
 from backend.net_simulation.ryu_controller import send_flow_mod
-from backend.utils.topology_utils import get_output_port
+from backend.utils.topology_utils import get_output_port, auto_fix_switches_by_intent
 
 class FlowTableManager:
+
     def install_rule(self, instruction: dict) -> str:
+        # 自动修复 switches
+        if not instruction.get("switches") or instruction["switches"] == ["s1"]:
+            auto_fix_switches_by_intent(instruction)
+
         switches = instruction.get("switches")
-        if not switches:
-            switches = ["s1"]
-            print("[WARNING] 意图中未指定 switches，默认使用 s1")
         results = []
 
         extra = instruction.get("extra", {})
@@ -25,54 +27,78 @@ class FlowTableManager:
             try:
                 dpid = convert_switch_name_to_dpid(sw)
             except ValueError as e:
-                results.append("❌ 无法识别交换机 %s: %s" % (sw, e))
+                results.append(f"❌ 无法识别交换机 {sw}: {e}")
                 continue
 
             flow_rule = {
                 "dpid": dpid,
                 "match": match,
                 "priority": priority,
-                "actions": []  # 默认 DENY
+                "actions": []  # 默认阻断
             }
 
             print(f"[flowtable_manager] action_flag为 {action_flag}")
             if action_flag == "ALLOW":
-                # 尝试获取精确输出端口
                 try:
                     src_ip = match.get("nw_src")
                     dst_ip = match.get("nw_dst")
-                    port = get_output_port(sw, dst_ip,mm)  # 你需要提供此函数
-                    
+                    port = get_output_port(sw, dst_ip, mm)
                     if port is not None:
                         flow_rule["actions"] = [{"type": "OUTPUT", "port": port}]
-                        print(f"[flowtable_manager]出口端口为{port}")
-
+                        print(f"[flowtable_manager] 出口端口为 {port}")
                     else:
                         print("[⚠️ Fallback] 找不到端口，改为 FLOOD")
                         flow_rule["actions"] = [{"type": "OUTPUT", "port": "FLOOD"}]
                 except Exception as e:
-                    print("[⚠️ 错误] 获取端口失败: %s，改为 FLOOD" % e)
+                    print(f"[⚠️ 错误] 获取端口失败: {e}，改为 FLOOD")
                     flow_rule["actions"] = [{"type": "OUTPUT", "port": "FLOOD"}]
 
             if send_flow_mod(flow_rule):
                 behavior = "转发" if flow_rule["actions"] else "阻断"
-                results.append("✅ 成功下发到 %s (%s %s)" % (sw, behavior, flow_rule["match"]))
+                results.append(f"✅ 成功下发到 {sw} ({behavior} {flow_rule['match']})")
             else:
-                results.append("❌ 下发失败到 %s" % sw)
+                results.append(f"❌ 下发失败到 {sw}")
 
         return "\n".join(results)
 
-
-
     def delete_rule(self, instruction: dict) -> str:
-        switches = instruction.get("switches", [])
-        match = instruction.get("match", {})
+        results = []
 
+        # 自动修复 switch
+        if not instruction.get("switches") or instruction["switches"] == ["s1"]:
+            auto_fix_switches_by_intent(instruction)
+
+        switches = instruction.get("switches", [])
+        match = instruction.get("match", {}) or instruction.get("extra", {}).get("match", {})
         if not switches or not match:
             return "❌ 参数错误：未提供交换机或匹配字段"
 
+        src_ip = match.get("nw_src")
+        dst_ip = match.get("nw_dst")
+        proto = match.get("nw_proto")
+        dl_type = match.get("dl_type")
+
+        # 删除原方向
+        results.append(self._delete_on_switches(switches, match))
+
+        # 反方向再来一次
+        if src_ip and dst_ip:
+            reverse_match = {
+                "nw_src": dst_ip,
+                "nw_dst": src_ip,
+                "nw_proto": proto,
+                "dl_type": dl_type
+            }
+            results.append(self._delete_on_switches(switches, reverse_match))
+
+        return "\n".join(results)
+
+    def _delete_on_switches(self, switches, match):
         for sw in switches:
-            sw_list = get_all_switch_ids() if sw == "all" else [convert_switch_name_to_dpid(sw)]
+            try:
+                sw_list = get_all_switch_ids() if sw == "all" else [convert_switch_name_to_dpid(sw)]
+            except ValueError as e:
+                return f"❌ 无法识别交换机 {sw}: {e}"
 
             for dpid in sw_list:
                 payload = {"dpid": dpid, "match": match}
@@ -82,8 +108,36 @@ class FlowTableManager:
                         return f"❌ 删除失败，交换机 {dpid} 返回码 {resp.status_code}"
                 except Exception as e:
                     return f"❌ 删除失败: {e}"
+        return f"✅ 已删除匹配规则: {match}"
 
-        return "✅ 流表删除成功"
+    # def delete_rule(self, instruction: dict) -> str:
+    #     # 自动修复 switches（和 install_rule 一致）
+    #     if not instruction.get("switches") or instruction["switches"] == ["s1"]:
+    #         auto_fix_switches_by_intent(instruction)
+
+    #     switches = instruction.get("switches", [])
+    #     match = instruction.get("match", {})
+
+    #     if not switches or not match:
+    #         return "❌ 参数错误：未提供交换机或匹配字段"
+
+    #     for sw in switches:
+    #         try:
+    #             sw_list = get_all_switch_ids() if sw == "all" else [convert_switch_name_to_dpid(sw)]
+    #         except ValueError as e:
+    #             return f"❌ 无法识别交换机 {sw}: {e}"
+
+    #         for dpid in sw_list:
+    #             payload = {"dpid": dpid, "match": match}
+    #             try:
+    #                 resp = requests.post("http://localhost:8081/stats/flowentry/delete", json=payload)
+    #                 if resp.status_code != 200:
+    #                     return f"❌ 删除失败，交换机 {dpid} 返回码 {resp.status_code}"
+    #             except Exception as e:
+    #                 return f"❌ 删除失败: {e}"
+
+    #     return "✅ 流表删除成功"
+
 
     def query_table(self, instruction: dict) -> str:
         switches = instruction.get("switches", [])
