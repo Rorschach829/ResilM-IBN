@@ -204,7 +204,7 @@ if __name__ == '__main__':
 
 
 # 文件路径: ./tmp/intent_log_path.txt
-/data/gjw/Meta-IBN/logs/topo_20250720_205015.jsonl
+/data/gjw/Meta-IBN/logs/topo_20250725_172737.jsonl
 
 # 文件路径: ./backend/__init__.py
 
@@ -1438,7 +1438,7 @@ class JSONBuilderAgent:
 
         try:
             response = client.chat.completions.create(
-                model="deepseek-chat",  # 你本地模型名
+                model="deepseek-reasoner",  # 你本地模型名
                 messages=messages,
                 stream=False,
                 temperature=0.0
@@ -1658,6 +1658,8 @@ class TopologyAgent:
 - 不允许空 key、None、null；
 - 数组以 `[` 开头，以 `]` 结尾，中间是多个合法 JSON 对象；
 - 所有数字用十进制，不允许 0x 表示。
+- 如果意图是恢复两台主机之间的通信或连通性，不需要中间的“检查流表”步骤，请直接规划删除操作和连通性验证。
+
 
 ---
 
@@ -1677,25 +1679,36 @@ class TopologyAgent:
 
 2. install_flowtable
 - switches: ["s1"]
-- extra:
-  {{
-    "match": {{
+- 匹配字段写在 match 字段中，放在顶层：
+  - match: {{
       "dl_type": 2048,
       "nw_src": "10.0.0.1",
       "nw_dst": "10.0.0.2",
       "nw_proto": 1
-    }},
-    "actions": "DENY",
-    "priority": 100
-  }}
+    }}
+- actions: "DENY" 或 "ALLOW"
+- priority: 整数，优先级（可选）
 
 3. delete_flowtable
-    - switches: 要操作的交换机列表，如 ["s1"]
-    - match: 匹配条件（必须和 install_flowtable 完全一致才能删除成功），必须包含：
-        - dl_type: 2048 （IP 层协议）
-        - nw_src: 源 IP 地址
-        - nw_dst: 目的 IP 地址
-        - nw_proto: 协议号，1 表示 ICMP（如需删除阻断 ping 的规则，必须设置为 1）
+- switches: 要操作的交换机列表，如 ["s1"]
+- match: 匹配字段，**格式必须和 install_flowtable 保持一致**，包含以下字段：
+  - dl_type: 2048
+  - nw_src: 源 IP 地址
+  - nw_dst: 目的 IP 地址
+  - nw_proto: 1（表示阻断 ping 的规则）
+- actions、priority 字段不需要设置，但 match 字段必须与 install_flowtable 完全一致
+
+示例：
+{{
+  "action": "delete_flowtable",
+  "switches": ["s1"],
+  "match": {{
+    "dl_type": 2048,
+    "nw_src": "10.0.0.1",
+    "nw_dst": "10.0.0.2",
+    "nw_proto": 1
+  }}
+}}
 
 4. ping_test
    - hosts: 所涉及主机名列表，如 ["h1", "h2"]
@@ -1750,75 +1763,6 @@ class TopologyAgent:
 
 ---
 
-【示例输入和输出】
-
-【示例输入】：
-Step 1: 创建网络拓扑，包含主机 h1 和 h2 连接到 交换机s1；
-Step 2: 在交换机s1上下发流表，阻断从10.0.0.1到10.0.0.2的ICMP流量，优先级100
-Step 3: 测试 h1 是否能 ping 通 h2；
-
-输出：
-[
-  {{
-    "action": "create_topology",
-    "hosts": ["h1", "h2"],
-    "switches": ["s1"],
-    "links": [
-      {"src": "h1", "dst": "s1"},
-      {"src": "h2", "dst": "s1"}
-    ],
-    "controller": {{
-      "type": "RemoteController",
-      "ip": "127.0.0.1",
-      "port": 6633
-    }}
-  }},
-  {{
-    "action": "install_flowtable",
-    "switches": ["s1"],
-    "extra": {{
-      "match": {{
-        "dl_type": 2048,
-        "nw_src": "10.0.0.1",
-        "nw_dst": "10.0.0.2",
-        "nw_proto": 1
-      }},
-      "actions": "DENY",
-      "priority": 100
-    }}
-  }},
-  {{
-    "action": "ping_test",
-    "hosts": ["h1", "h2"],
-    "extra": {{
-      "source": "h1",
-      "target": "10.0.0.2"
-    }}
-  }}
-]
-
----
-
-输入：
-"Step 1: 阻止 h1 ping h2"
-
-输出：
-{{
-  "action": "install_flowtable",
-  "switches": ["s1"],
-  "extra": {{
-    "match": {{
-      "dl_type": 2048,
-      "nw_src": "10.0.0.1",
-      "nw_dst": "10.0.0.2",
-      "nw_proto": 1
-    }},
-    "actions": "DENY",
-    "priority": 100
-  }}
-}}
-
----
 
 【额外规则说明】
 
@@ -1829,93 +1773,128 @@ Step 3: 测试 h1 是否能 ping 通 h2；
 
 # 文件路径: ./backend/agent_core/flowtable_manager.py
 # backend/utils/flowtable_manager.py
-
+from typing import List, Dict, Any
 import requests
 import json
 import backend.net_simulation.mininet_manager as mm
 from backend.utils.utils import convert_switch_name_to_dpid
 from backend.utils.ryu_utils import get_all_switch_ids
 from backend.net_simulation.ryu_controller import send_flow_mod
-from backend.utils.topology_utils import get_output_port
+from backend.utils.topology_utils import get_output_port, auto_fix_switches_by_intent,fix_switches_for_get_flowtable
+
 
 class FlowTableManager:
+
     def install_rule(self, instruction: dict) -> str:
+        # 自动修复 switches
+        if not instruction.get("switches") or instruction["switches"] == ["s1"]:
+            auto_fix_switches_by_intent(instruction)
+
         switches = instruction.get("switches")
-        if not switches:
-            switches = ["s1"]
-            print("[WARNING] 意图中未指定 switches，默认使用 s1")
         results = []
 
-        extra = instruction.get("extra", {})
-        match = extra.get("match", {})
-        action_flag = extra.get("actions", "DENY")
-        priority = extra.get("priority", 100)
+        match = instruction.get("match") or instruction.get("extra", {}).get("match", {})
+        action_flag = instruction.get("actions") or instruction.get("extra", {}).get("actions", "DENY")
+        priority = instruction.get("priority") or instruction.get("extra", {}).get("priority", 100)
 
         for sw in switches:
             try:
                 dpid = convert_switch_name_to_dpid(sw)
             except ValueError as e:
-                results.append("❌ 无法识别交换机 %s: %s" % (sw, e))
+                results.append(f"❌ 无法识别交换机 {sw}: {e}")
                 continue
 
             flow_rule = {
                 "dpid": dpid,
                 "match": match,
                 "priority": priority,
-                "actions": []  # 默认 DENY
+                "actions": []  # 默认阻断
             }
 
             print(f"[flowtable_manager] action_flag为 {action_flag}")
             if action_flag == "ALLOW":
-                # 尝试获取精确输出端口
                 try:
                     src_ip = match.get("nw_src")
                     dst_ip = match.get("nw_dst")
-                    port = get_output_port(sw, dst_ip,mm)  # 你需要提供此函数
-                    
+                    port = get_output_port(sw, dst_ip, mm)
                     if port is not None:
                         flow_rule["actions"] = [{"type": "OUTPUT", "port": port}]
-                        print(f"[flowtable_manager]出口端口为{port}")
-
+                        print(f"[flowtable_manager] 出口端口为 {port}")
                     else:
                         print("[⚠️ Fallback] 找不到端口，改为 FLOOD")
                         flow_rule["actions"] = [{"type": "OUTPUT", "port": "FLOOD"}]
                 except Exception as e:
-                    print("[⚠️ 错误] 获取端口失败: %s，改为 FLOOD" % e)
+                    print(f"[⚠️ 错误] 获取端口失败: {e}，改为 FLOOD")
                     flow_rule["actions"] = [{"type": "OUTPUT", "port": "FLOOD"}]
 
             if send_flow_mod(flow_rule):
                 behavior = "转发" if flow_rule["actions"] else "阻断"
-                results.append("✅ 成功下发到 %s (%s %s)" % (sw, behavior, flow_rule["match"]))
+                results.append(f"✅ 成功下发到 {sw} ({behavior} {flow_rule['match']})")
             else:
-                results.append("❌ 下发失败到 %s" % sw)
+                results.append(f"❌ 下发失败到 {sw}")
+
+        return "\n".join(results)
+
+    def delete_rule(self, instruction: dict) -> str:
+        results = []
+
+        # 强制自动补全路径交换机
+        auto_fix_switches_by_intent(instruction)
+        switches = instruction.get("switches", [])
+        match = instruction.get("match", {}) or instruction.get("extra", {}).get("match", {})
+
+        if not switches or not match:
+            return "❌ 参数错误：未提供交换机或匹配字段"
+
+        # 提取 IP 字段用于反向构造
+        src_ip = match.get("nw_src")
+        dst_ip = match.get("nw_dst")
+        proto = match.get("nw_proto")
+        dl_type = match.get("dl_type")
+
+        # ✅ 删除原方向规则
+        for sw in switches:
+            results.append(self._delete_on_switches(sw, match))
+
+        # ✅ 自动构造反向匹配规则（每个交换机都删）
+        if src_ip and dst_ip:
+            reverse_match = {
+                "nw_src": dst_ip,
+                "nw_dst": src_ip,
+                "nw_proto": proto,
+                "dl_type": dl_type
+            }
+            for sw in switches:
+                results.append(self._delete_on_switches(sw, reverse_match))
 
         return "\n".join(results)
 
 
 
-    def delete_rule(self, instruction: dict) -> str:
-        switches = instruction.get("switches", [])
-        match = instruction.get("match", {})
+    def _delete_on_switches(self, sw: str, match: Dict[str, Any]):
+        try:
+            dpid = convert_switch_name_to_dpid(sw)
+        except ValueError as e:
+            return f"❌ 无法识别交换机 {sw}: {e}"
 
-        if not switches or not match:
-            return "❌ 参数错误：未提供交换机或匹配字段"
+        payload = {"dpid": dpid, "match": match}
+        try:
+            resp = requests.post("http://localhost:8081/stats/flowentry/delete", json=payload)
+            print(f"[delete_rule] 正在删除 {sw} 上匹配 {match}")
 
-        for sw in switches:
-            sw_list = get_all_switch_ids() if sw == "all" else [convert_switch_name_to_dpid(sw)]
+            if resp.status_code != 200:
+                return f"❌ 删除失败，交换机 {sw} 返回码 {resp.status_code}"
+        except Exception as e:
+            return f"❌ 删除失败: {e}"
 
-            for dpid in sw_list:
-                payload = {"dpid": dpid, "match": match}
-                try:
-                    resp = requests.post("http://localhost:8081/stats/flowentry/delete", json=payload)
-                    if resp.status_code != 200:
-                        return f"❌ 删除失败，交换机 {dpid} 返回码 {resp.status_code}"
-                except Exception as e:
-                    return f"❌ 删除失败: {e}"
+        return f"✅ 删除匹配规则: {match}"
 
-        return "✅ 流表删除成功"
 
     def query_table(self, instruction: dict) -> str:
+
+        if not instruction.get("switches") or instruction["switches"] == ["s1"]:
+            fix_switches_for_get_flowtable(instruction)
+
         switches = instruction.get("switches", [])
         results = []
 
@@ -2616,6 +2595,7 @@ from backend.net_simulation import mininet_manager as mm
 import threading
 import itertools
 from typing import Optional, Tuple
+from backend.net_simulation import mininet_manager as mm
 def trigger_controller_learn_hosts(net):
     print("[INTENT] 正在触发主机之间通信，帮助控制器学习主机...")
     try:
@@ -2900,6 +2880,97 @@ def get_output_port(switch_name: str, dst_ip: str, mm) -> Optional[int]:
 
     return edge["port"]
 
+# 已知某主机 IP，反查它挂在哪个交换机上（用于流表下发/删除自动推理）
+def get_access_switch_for_host(host_name: str) -> Optional[str]:
+    """从主机名反查其接入交换机"""
+    host = mm.global_net.get(host_name)
+    if not host:
+        return None
+
+    for intf in host.intfList():
+        if intf.link:
+            node1 = intf.link.intf1.node
+            node2 = intf.link.intf2.node
+            for node in (node1, node2):
+                if node.name != host.name and node.name.startswith("s"):
+                    return node.name
+    return None
+
+
+def get_access_switch_for_ip(ip: str) -> Optional[str]:
+    """从主机 IP 反查其接入交换机"""
+    host = mm.global_net_ip_map.get(ip)
+    if not host:
+        print(f"[get_access_switch_for_ip] 未找到 IP 对应主机: {ip}")
+        return None
+
+    return get_access_switch_for_host(host.name)
+
+def auto_fix_switches_by_intent(instruction: dict):
+    """
+    自动修复 instruction 中的 switches 字段：
+    - 如果是 install_flowtable / delete_flowtable，并且是 DENY ping，则使用路径上的所有交换机；
+    - 否则使用目标主机的接入交换机。
+    """
+    match = (
+        instruction.get("extra", {}).get("match")
+        or instruction.get("match", {})
+    )
+    action_type = instruction.get("action")
+    behavior = instruction.get("extra", {}).get("actions") or instruction.get("actions")
+
+    src_ip = match.get("nw_src")
+    dst_ip = match.get("nw_dst")
+
+    if not (src_ip and dst_ip):
+        print("[auto_fix] 缺失 IP 字段，跳过修复")
+        return
+
+    if src_ip not in mm.global_net_ip_map or dst_ip not in mm.global_net_ip_map:
+        print("[auto_fix] IP 未注册，跳过修复")
+        return
+
+    src_host = mm.global_net_ip_map[src_ip].name
+
+    switches = []
+    if action_type in ["install_flowtable", "delete_flowtable"]:
+        # 判断是否为阻断 ping 类型
+        # ✅ 默认视为阻断 ping，只要是 ICMP 协议 + 没有明确 ALLOW
+        is_deny_ping = (
+            match.get("nw_proto") == 1 and
+            (instruction.get("actions") != "ALLOW" and
+            instruction.get("extra", {}).get("actions") != "ALLOW")
+        )
+
+        if is_deny_ping:
+            switches = get_path_switches(src_host, dst_ip)
+            print(f"[auto_fix] {action_type} 使用路径交换机: {switches}")
+        else:
+            sw = get_access_switch_for_ip(dst_ip)
+            switches = [sw] if sw else []
+            print(f"[auto_fix] {action_type} 使用接入交换机: {switches}")
+    else:
+        print(f"[auto_fix] 非流表操作（{action_type}），跳过修复")
+        return
+
+    if switches:
+        instruction["switches"] = switches
+    else:
+        print("[auto_fix] 未找到合适的交换机，保持原样")
+
+# 动态获取当前主机的交换机上的流表
+def fix_switches_for_get_flowtable(instruction):
+    match = instruction.get("match", {})
+    src_ip = match.get("nw_src")
+    dst_ip = match.get("nw_dst")
+
+    if not dst_ip:
+        return  # 没信息就不修
+
+    sw = get_access_switch_for_ip(dst_ip)
+    if sw:
+        instruction["switches"] = [sw]
+        print(f"[auto_fix:get_flowtable] 设置 switches = [{sw}]")
 
 
 # 文件路径: ./backend/utils/utils.py

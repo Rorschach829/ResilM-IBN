@@ -9,6 +9,7 @@ from backend.net_simulation import mininet_manager as mm
 import threading
 import itertools
 from typing import Optional, Tuple
+from backend.net_simulation import mininet_manager as mm
 def trigger_controller_learn_hosts(net):
     print("[INTENT] 正在触发主机之间通信，帮助控制器学习主机...")
     try:
@@ -321,35 +322,66 @@ def get_access_switch_for_ip(ip: str) -> Optional[str]:
 
 def auto_fix_switches_by_intent(instruction: dict):
     """
-    根据意图类型自动选择 switch 下发策略：
-    - 如果是 install_flowtable + DENY + ICMP（阻断 ping），则在路径上所有交换机下发
-    - 否则仅在目的主机接入交换机下发
+    自动修复 instruction 中的 switches 字段：
+    - 如果是 install_flowtable / delete_flowtable，并且是 DENY ping，则使用路径上的所有交换机；
+    - 否则使用目标主机的接入交换机。
     """
-    match = instruction.get("extra", {}).get("match") or instruction.get("match", {})
+    match = (
+        instruction.get("extra", {}).get("match")
+        or instruction.get("match", {})
+    )
     action_type = instruction.get("action")
-    behavior = instruction.get("extra", {}).get("actions")
+    behavior = instruction.get("extra", {}).get("actions") or instruction.get("actions")
 
     src_ip = match.get("nw_src")
     dst_ip = match.get("nw_dst")
+
     if not (src_ip and dst_ip):
         print("[auto_fix] 缺失 IP 字段，跳过修复")
         return
 
     if src_ip not in mm.global_net_ip_map or dst_ip not in mm.global_net_ip_map:
-        print("[auto_fix] IP 未在网络中注册，跳过修复")
+        print("[auto_fix] IP 未注册，跳过修复")
         return
 
     src_host = mm.global_net_ip_map[src_ip].name
 
-    if action_type == "install_flowtable" and behavior == "DENY" and match.get("nw_proto") == 1:
-        switches = get_path_switches(src_host, dst_ip)
-        print(f"[auto_fix] DENY ping，路径交换机为: {switches}")
+    switches = []
+    if action_type in ["install_flowtable", "delete_flowtable"]:
+        # 判断是否为阻断 ping 类型
+        # ✅ 默认视为阻断 ping，只要是 ICMP 协议 + 没有明确 ALLOW
+        is_deny_ping = (
+            match.get("nw_proto") == 1 and
+            (instruction.get("actions") != "ALLOW" and
+            instruction.get("extra", {}).get("actions") != "ALLOW")
+        )
+
+        if is_deny_ping:
+            switches = get_path_switches(src_host, dst_ip)
+            print(f"[auto_fix] {action_type} 使用路径交换机: {switches}")
+        else:
+            sw = get_access_switch_for_ip(dst_ip)
+            switches = [sw] if sw else []
+            print(f"[auto_fix] {action_type} 使用接入交换机: {switches}")
     else:
-        sw = get_access_switch_for_ip(dst_ip)
-        switches = [sw] if sw else []
-        print(f"[auto_fix] 默认使用目的交换机: {switches}")
+        print(f"[auto_fix] 非流表操作（{action_type}），跳过修复")
+        return
 
     if switches:
         instruction["switches"] = switches
     else:
-        print("[auto_fix] 未找到合适的 switches，保持原样")
+        print("[auto_fix] 未找到合适的交换机，保持原样")
+
+# 动态获取当前主机的交换机上的流表
+def fix_switches_for_get_flowtable(instruction):
+    match = instruction.get("match", {})
+    src_ip = match.get("nw_src")
+    dst_ip = match.get("nw_dst")
+
+    if not dst_ip:
+        return  # 没信息就不修
+
+    sw = get_access_switch_for_ip(dst_ip)
+    if sw:
+        instruction["switches"] = [sw]
+        print(f"[auto_fix:get_flowtable] 设置 switches = [{sw}]")

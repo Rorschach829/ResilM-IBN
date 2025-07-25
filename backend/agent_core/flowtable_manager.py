@@ -1,12 +1,13 @@
 # backend/utils/flowtable_manager.py
-
+from typing import List, Dict, Any
 import requests
 import json
 import backend.net_simulation.mininet_manager as mm
 from backend.utils.utils import convert_switch_name_to_dpid
 from backend.utils.ryu_utils import get_all_switch_ids
 from backend.net_simulation.ryu_controller import send_flow_mod
-from backend.utils.topology_utils import get_output_port, auto_fix_switches_by_intent
+from backend.utils.topology_utils import get_output_port, auto_fix_switches_by_intent,fix_switches_for_get_flowtable
+
 
 class FlowTableManager:
 
@@ -18,10 +19,9 @@ class FlowTableManager:
         switches = instruction.get("switches")
         results = []
 
-        extra = instruction.get("extra", {})
-        match = extra.get("match", {})
-        action_flag = extra.get("actions", "DENY")
-        priority = extra.get("priority", 100)
+        match = instruction.get("match") or instruction.get("extra", {}).get("match", {})
+        action_flag = instruction.get("actions") or instruction.get("extra", {}).get("actions", "DENY")
+        priority = instruction.get("priority") or instruction.get("extra", {}).get("priority", 100)
 
         for sw in switches:
             try:
@@ -64,24 +64,25 @@ class FlowTableManager:
     def delete_rule(self, instruction: dict) -> str:
         results = []
 
-        # 自动修复 switch
-        if not instruction.get("switches") or instruction["switches"] == ["s1"]:
-            auto_fix_switches_by_intent(instruction)
-
+        # 强制自动补全路径交换机
+        auto_fix_switches_by_intent(instruction)
         switches = instruction.get("switches", [])
         match = instruction.get("match", {}) or instruction.get("extra", {}).get("match", {})
+
         if not switches or not match:
             return "❌ 参数错误：未提供交换机或匹配字段"
 
+        # 提取 IP 字段用于反向构造
         src_ip = match.get("nw_src")
         dst_ip = match.get("nw_dst")
         proto = match.get("nw_proto")
         dl_type = match.get("dl_type")
 
-        # 删除原方向
-        results.append(self._delete_on_switches(switches, match))
+        # ✅ 删除原方向规则
+        for sw in switches:
+            results.append(self._delete_on_switches(sw, match))
 
-        # 反方向再来一次
+        # ✅ 自动构造反向匹配规则（每个交换机都删）
         if src_ip and dst_ip:
             reverse_match = {
                 "nw_src": dst_ip,
@@ -89,57 +90,37 @@ class FlowTableManager:
                 "nw_proto": proto,
                 "dl_type": dl_type
             }
-            results.append(self._delete_on_switches(switches, reverse_match))
+            for sw in switches:
+                results.append(self._delete_on_switches(sw, reverse_match))
 
         return "\n".join(results)
 
-    def _delete_on_switches(self, switches, match):
-        for sw in switches:
-            try:
-                sw_list = get_all_switch_ids() if sw == "all" else [convert_switch_name_to_dpid(sw)]
-            except ValueError as e:
-                return f"❌ 无法识别交换机 {sw}: {e}"
 
-            for dpid in sw_list:
-                payload = {"dpid": dpid, "match": match}
-                try:
-                    resp = requests.post("http://localhost:8081/stats/flowentry/delete", json=payload)
-                    if resp.status_code != 200:
-                        return f"❌ 删除失败，交换机 {dpid} 返回码 {resp.status_code}"
-                except Exception as e:
-                    return f"❌ 删除失败: {e}"
-        return f"✅ 已删除匹配规则: {match}"
 
-    # def delete_rule(self, instruction: dict) -> str:
-    #     # 自动修复 switches（和 install_rule 一致）
-    #     if not instruction.get("switches") or instruction["switches"] == ["s1"]:
-    #         auto_fix_switches_by_intent(instruction)
+    def _delete_on_switches(self, sw: str, match: Dict[str, Any]):
+        try:
+            dpid = convert_switch_name_to_dpid(sw)
+        except ValueError as e:
+            return f"❌ 无法识别交换机 {sw}: {e}"
 
-    #     switches = instruction.get("switches", [])
-    #     match = instruction.get("match", {})
+        payload = {"dpid": dpid, "match": match}
+        try:
+            resp = requests.post("http://localhost:8081/stats/flowentry/delete", json=payload)
+            print(f"[delete_rule] 正在删除 {sw} 上匹配 {match}")
 
-    #     if not switches or not match:
-    #         return "❌ 参数错误：未提供交换机或匹配字段"
+            if resp.status_code != 200:
+                return f"❌ 删除失败，交换机 {sw} 返回码 {resp.status_code}"
+        except Exception as e:
+            return f"❌ 删除失败: {e}"
 
-    #     for sw in switches:
-    #         try:
-    #             sw_list = get_all_switch_ids() if sw == "all" else [convert_switch_name_to_dpid(sw)]
-    #         except ValueError as e:
-    #             return f"❌ 无法识别交换机 {sw}: {e}"
-
-    #         for dpid in sw_list:
-    #             payload = {"dpid": dpid, "match": match}
-    #             try:
-    #                 resp = requests.post("http://localhost:8081/stats/flowentry/delete", json=payload)
-    #                 if resp.status_code != 200:
-    #                     return f"❌ 删除失败，交换机 {dpid} 返回码 {resp.status_code}"
-    #             except Exception as e:
-    #                 return f"❌ 删除失败: {e}"
-
-    #     return "✅ 流表删除成功"
+        return f"✅ 删除匹配规则: {match}"
 
 
     def query_table(self, instruction: dict) -> str:
+
+        if not instruction.get("switches") or instruction["switches"] == ["s1"]:
+            fix_switches_for_get_flowtable(instruction)
+
         switches = instruction.get("switches", [])
         results = []
 

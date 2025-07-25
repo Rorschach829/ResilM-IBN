@@ -24,6 +24,8 @@
 - 不允许空 key、None、null；
 - 数组以 `[` 开头，以 `]` 结尾，中间是多个合法 JSON 对象；
 - 所有数字用十进制，不允许 0x 表示。
+- 如果意图是恢复两台主机之间的通信或连通性，不需要中间的“检查流表”步骤，请直接规划删除操作和连通性验证。
+
 
 ---
 
@@ -43,25 +45,36 @@
 
 2. install_flowtable
 - switches: ["s1"]
-- extra:
-  {{
-    "match": {{
+- 匹配字段写在 match 字段中，放在顶层：
+  - match: {{
       "dl_type": 2048,
       "nw_src": "10.0.0.1",
       "nw_dst": "10.0.0.2",
       "nw_proto": 1
-    }},
-    "actions": "DENY",
-    "priority": 100
-  }}
+    }}
+- actions: "DENY" 或 "ALLOW"
+- priority: 整数，优先级（可选）
 
 3. delete_flowtable
-    - switches: 要操作的交换机列表，如 ["s1"]
-    - match: 匹配条件（必须和 install_flowtable 完全一致才能删除成功），必须包含：
-        - dl_type: 2048 （IP 层协议）
-        - nw_src: 源 IP 地址
-        - nw_dst: 目的 IP 地址
-        - nw_proto: 协议号，1 表示 ICMP（如需删除阻断 ping 的规则，必须设置为 1）
+- switches: 要操作的交换机列表，如 ["s1"]
+- match: 匹配字段，**格式必须和 install_flowtable 保持一致**，包含以下字段：
+  - dl_type: 2048
+  - nw_src: 源 IP 地址
+  - nw_dst: 目的 IP 地址
+  - nw_proto: 1（表示阻断 ping 的规则）
+- actions、priority 字段不需要设置，但 match 字段必须与 install_flowtable 完全一致
+
+示例：
+{{
+  "action": "delete_flowtable",
+  "switches": ["s1"],
+  "match": {{
+    "dl_type": 2048,
+    "nw_src": "10.0.0.1",
+    "nw_dst": "10.0.0.2",
+    "nw_proto": 1
+  }}
+}}
 
 4. ping_test
    - hosts: 所涉及主机名列表，如 ["h1", "h2"]
@@ -116,75 +129,6 @@
 
 ---
 
-【示例输入和输出】
-
-【示例输入】：
-Step 1: 创建网络拓扑，包含主机 h1 和 h2 连接到 交换机s1；
-Step 2: 在交换机s1上下发流表，阻断从10.0.0.1到10.0.0.2的ICMP流量，优先级100
-Step 3: 测试 h1 是否能 ping 通 h2；
-
-输出：
-[
-  {{
-    "action": "create_topology",
-    "hosts": ["h1", "h2"],
-    "switches": ["s1"],
-    "links": [
-      {"src": "h1", "dst": "s1"},
-      {"src": "h2", "dst": "s1"}
-    ],
-    "controller": {{
-      "type": "RemoteController",
-      "ip": "127.0.0.1",
-      "port": 6633
-    }}
-  }},
-  {{
-    "action": "install_flowtable",
-    "switches": ["s1"],
-    "extra": {{
-      "match": {{
-        "dl_type": 2048,
-        "nw_src": "10.0.0.1",
-        "nw_dst": "10.0.0.2",
-        "nw_proto": 1
-      }},
-      "actions": "DENY",
-      "priority": 100
-    }}
-  }},
-  {{
-    "action": "ping_test",
-    "hosts": ["h1", "h2"],
-    "extra": {{
-      "source": "h1",
-      "target": "10.0.0.2"
-    }}
-  }}
-]
-
----
-
-输入：
-"Step 1: 阻止 h1 ping h2"
-
-输出：
-{{
-  "action": "install_flowtable",
-  "switches": ["s1"],
-  "extra": {{
-    "match": {{
-      "dl_type": 2048,
-      "nw_src": "10.0.0.1",
-      "nw_dst": "10.0.0.2",
-      "nw_proto": 1
-    }},
-    "actions": "DENY",
-    "priority": 100
-  }}
-}}
-
----
 
 【额外规则说明】
 
