@@ -18,18 +18,20 @@ SKIP_ACTIONS_ON_RECOVERY = {
 class TopologyManager:
 
     def create_topology(self, instruction: dict) -> str:
-            start_new_intent_log()
-            result = mm.rebuild_topology(instruction)
 
-            if mm.global_net:
-                net = mm.global_net
-                expected_hosts = len(net.hosts)
-                if self._wait_for_all_hosts(expected=expected_hosts):
-                    build_and_send_all_path_intents(net)
-                    print("[INTENT] 路径流表下发完成 ✅")
-                else:
-                    print(f"[INTENT] ❌ 等待超时，期望注册 {expected_hosts} 台主机，实际不足")
-            return result
+        result = mm.rebuild_topology(instruction)
+        start_new_intent_log()
+        if mm.global_net:
+            net = mm.global_net
+            expected_hosts = len(net.hosts)
+            if self._wait_for_all_hosts(expected=expected_hosts):
+                build_and_send_all_path_intents(net)
+                print("[INTENT] 路径流表下发完成 ✅")
+            else:
+                print(f"[INTENT] ❌ 等待超时，期望注册 {expected_hosts} 台主机，实际不足")
+
+        return result
+
 
     def shutdown_topology(self) -> str:
         return mm.stop_topology()

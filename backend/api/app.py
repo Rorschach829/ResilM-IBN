@@ -5,7 +5,7 @@ from backend.net_simulation.mininet_manager import run_mininet_code, get_current
 from backend.net_simulation.instruction_executor import execute_instruction
 import backend.net_simulation.mininet_manager as mm
 from backend.utils.token_utils import get_total_tokens
-from backend.utils.logger import log_intent
+from backend.utils.logger import log_intent, start_new_intent_log
 app = Flask(__name__, 
             template_folder="/data/gjw/Meta-IBN/frontend/templates", 
             static_folder="/data/gjw/Meta-IBN/frontend/static")
@@ -18,45 +18,13 @@ intent_agent = IntentAgent()
 def index():
     return render_template("index.html")
 
-# @app.route("/intent", methods=["POST"])
-# def handle_intent():
-#     data = request.json
-#     intent_text = data.get("intent", "")
-
-#     # 意图为空则直接返回
-#     if not intent_text:
-#         return jsonify({"error": "意图内容不能为空"}), 400
-
-#     try:
-#         # 注意：现在是列表（无论一个还是多个）
-#         instructions = intent_agent.intent_to_instruction(intent_text)
-#         all_outputs = []
-
-#         for instr in instructions:
-#             output = execute_instruction(instr)
-#             log_intent(intent_text, instr, output)
-#             all_outputs.append({
-#                 "action": instr.get("action"),
-#                 "result": output
-#             })
-
-#     except Exception as e:
-#         return jsonify({"error": f"指令执行失败: {str(e)}"}), 500
-
-#     return jsonify({
-#         "message": "✅ 所有指令执行完成",
-#         "instruction": instructions,
-#         "output": all_outputs,
-#         "success": True
-#     })
-
 @app.route("/intent", methods=["POST"])
 def handle_intent():
     data = request.json
     intent_text = data.get("intent", "")
     if not intent_text:
         return jsonify({"error": "意图内容不能为空"}), 400
-
+    
     try:
         instructions = intent_agent.intent_to_instruction(intent_text)
         all_outputs = []
@@ -78,6 +46,8 @@ def handle_intent():
                         "result": result
                     })
             else:
+                instr["intent_text"] = intent_text
+
                 result = execute_instruction(instr)
                 all_outputs.append({
                     "step": None,

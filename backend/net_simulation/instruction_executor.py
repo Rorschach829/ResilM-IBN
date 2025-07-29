@@ -25,14 +25,56 @@ def execute_instruction(instruction: dict) -> str:
         coordinator = _get_coordinator()
         instructions = [instruction]
         coordinator.handle_instruction_list(instructions)
-        return instructions[0].get("_result", "⚠️ 无执行结果")
+
+        result = instructions[0].get("_result", "⚠️ 无执行结果")
+
+        # ✅ 添加日志记录
+        log_intent(
+            intent_text=instruction.get("intent_text", "(未提供原始意图)"),
+            instruction=instruction,
+            result=result
+        )
+
+        return result
+
     except Exception as e:
-        return f"❌ 执行失败: {e}\n{traceback.format_exc()}"
+        error_msg = f"❌ 执行失败: {e}\n{traceback.format_exc()}"
+        # ✅ 失败也写日志
+        log_intent(
+            intent_text=instruction.get("intent_text", "(未提供原始意图)"),
+            instruction=instruction,
+            result=error_msg
+        )
+        return error_msg
+
 
 def execute_instruction_list(instruction_list: list[dict]) -> list[str]:
     try:
         coordinator = _get_coordinator()
         coordinator.handle_instruction_list(instruction_list)
-        return [instr.get("_result", "⚠️ 无执行结果") for instr in instruction_list]
+
+        results = []
+        for instr in instruction_list:
+            result = instr.get("_result", "⚠️ 无执行结果")
+            results.append(result)
+
+            # ✅ 每条指令单独记录日志
+            log_intent(
+                intent_text=instr.get("intent_text", "(未提供原始意图)"),
+                instruction=instr,
+                result=result
+            )
+
+        return results
+
     except Exception as e:
-        return [f"❌ 批量执行失败: {e}\n{traceback.format_exc()}"]
+        error_msg = f"❌ 批量执行失败: {e}\n{traceback.format_exc()}"
+        # ✅ 批量失败，全部写成失败记录
+        for instr in instruction_list:
+            log_intent(
+                intent_text=instr.get("intent_text", "(未提供原始意图)"),
+                instruction=instr,
+                result=error_msg
+            )
+        return [error_msg for _ in instruction_list]
+
