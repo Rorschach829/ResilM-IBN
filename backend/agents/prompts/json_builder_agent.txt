@@ -24,7 +24,8 @@
 - 不允许空 key、None、null；
 - 数组以 `[` 开头，以 `]` 结尾，中间是多个合法 JSON 对象；
 - 所有数字用十进制，不允许 0x 表示。
-- 如果意图是恢复两台主机之间的通信或连通性，不需要中间的“检查流表”步骤，请直接规划删除操作和连通性验证。
+
+
 
 
 ---
@@ -32,7 +33,7 @@
 【支持的 action 类型说明】
 
 1. create_topology
-##一定要包含以下几个此条
+##一定要包含以下几个字段
 - hosts: ["h1", "h2"]
 - switches: ["s1"]
 - links: [{{"src": "h1", "dst": "s1"}}, {{"src": "h2", "dst": "s1"}}]
@@ -99,16 +100,18 @@
  - 步骤可能会使用“带宽”、“网速”、“速率”、“速度”等说法来表达 bandwidth；
  - 步骤可能会说“10M”、“10Mbps”、“10兆”、“10兆每秒”，都视为 10 Mbps；
  - 请统一将结果输出为整数 Mbps 并填入 rate_mbps 字段。
- 
- 7. verify_bandwidth
+ - 如果同时提供 src_host 和 dst_host，则只对两者间流量限速；
+ - 如果只提供 src_host，不提供 dst_host，则限制该主机所有出站流量；
+
+ 7. verify_bandwidth(测试两主机之间的速度)
     - src_host: 源主机名，如 "h1"
     - dst_host: 目标主机名，如 "h2"
  
- 8. clear_bandwidth_limit
+ 8. clear_bandwidth_limit(取消某主机的限速规则)
     - host: 要取消限速的主机名，如 "h1"
  说明：
  - 此意图用于取消对指定主机的所有限速规则；
- - 实现方法是调用 `tc qdisc del dev hX-eth0 root` 命令。
+
  
  9. link_down
     - link: 包含两个交换机名的数组，如 ["s1", "s3"]

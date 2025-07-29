@@ -3,6 +3,7 @@
 import os
 import json
 from datetime import datetime
+import glob
 
 BASE_LOG_DIR = "/data/gjw/Meta-IBN/logs"
 CURRENT_LOG_FILE = None  # 🆕 当前正在记录的文件路径（每次创建拓扑会更新它）
@@ -25,6 +26,7 @@ def start_new_intent_log():
     with open(os.path.join(tmp_dir, "intent_log_path.txt"), "w") as f:
         f.write(CURRENT_LOG_FILE)
 
+    clean_old_logs(max_keep=2)
     return CURRENT_LOG_FILE
 
 def get_latest_log_file():
@@ -54,3 +56,19 @@ def log_intent(intent_text: str, instruction: dict, result: str):
 
     with open(CURRENT_LOG_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(log_entry, ensure_ascii=False, indent=2) + "\n\n")
+
+# 清理旧的日志文件，只保留最近3个
+def clean_old_logs(max_keep: int = 2):
+    log_files = sorted(
+        glob.glob(os.path.join(BASE_LOG_DIR, "topo_*.jsonl")),
+        key=os.path.getmtime,
+        reverse=True
+    )
+
+    to_delete = log_files[max_keep:]  # 超出保留数量的文件
+    for f in to_delete:
+        try:
+            os.remove(f)
+            print(f"[LOG CLEAN] 已删除旧日志文件: {f}")
+        except Exception as e:
+            print(f"[LOG CLEAN] 删除失败: {f}, 错误: {e}")
