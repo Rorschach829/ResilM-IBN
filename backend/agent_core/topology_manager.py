@@ -20,7 +20,9 @@ class TopologyManager:
     def create_topology(self, instruction: dict) -> str:
 
         result = mm.rebuild_topology(instruction)
+        # 在执行创建拓扑的时候创建新的日志文件
         start_new_intent_log()
+        
         if mm.global_net:
             net = mm.global_net
             expected_hosts = len(net.hosts)

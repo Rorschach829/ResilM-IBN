@@ -39,6 +39,8 @@ def handle_intent():
                 steps = instr.get("steps", [])
 
                 for i, sub_instr in enumerate(json_instrs):
+                    sub_instr["intent_text"] = intent_text  # ✅ 注入原始意图！
+                    
                     result = execute_instruction(sub_instr)
                     all_outputs.append({
                         "step": steps[i] if i < len(steps) else None,
@@ -46,7 +48,7 @@ def handle_intent():
                         "result": result
                     })
             else:
-                instr["intent_text"] = intent_text
+                instr["intent_text"] = intent_text  # ✅ 非 plan_steps 的也要注入！
 
                 result = execute_instruction(instr)
                 all_outputs.append({
@@ -63,6 +65,7 @@ def handle_intent():
         "output": all_outputs,
         "success": True
     })
+
 
 
 
