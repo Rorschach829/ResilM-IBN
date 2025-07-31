@@ -11,15 +11,16 @@ from typing import List, Optional
 class JSONBuilderAgent:
     def __init__(self):
         self.name = "JSONBuilderAgent"
-        message_pool.subscribe("plan_steps", self.generate_json_instructions)
+        message_pool.subscribe("plan_steps", self.handle_plan)
 
     def handle_plan(self, message: dict):
-
         steps = message.get("steps", [])
         intent_text = message.get("intent_text", "")
-        trace_id = message.get("trace_id", str(uuid.uuid4()))
 
-        print(f"[JSONBuilderAgent] ✅ 批处理 {len(steps)} 条步骤")
+        assert "trace_id" in message, "[JSONBuilderAgent] ❌ 缺少 trace_id"
+        trace_id = message["trace_id"]
+
+        print(f"[JSONBuilderAgent] ✅ 批处理 {len(steps)} 条步骤，trace_id={trace_id}")
 
         # === 跳过拓扑创建步骤，如果当前拓扑已存在 ===
         try:
@@ -34,7 +35,7 @@ class JSONBuilderAgent:
         except Exception as e:
             print(f"[JSONBuilderAgent] ⚠️ 无法访问拓扑接口，保留所有步骤: {e}")
 
-        # === 自动提取路径信息上下文（如 h9 和 h10） ===
+        # === 自动注入路径信息上下文 ===
         extra_context = None
         host_matches = re.findall(r'\bh\d+\b', intent_text)
         if len(host_matches) >= 2:
@@ -49,12 +50,10 @@ class JSONBuilderAgent:
             except Exception as e:
                 print(f"[JSONBuilderAgent] ⚠️ 查询 shortest_path 接口失败: {e}")
 
-        # === 构建 Prompt（用户步骤 + 路径上下文） ===
+        # === 构建 Prompt ===
         prompt = self.build_batch_prompt(steps, extra_context=extra_context)
 
-        # === 加载 system prompt 模板 ===
         system_prompt = load_json_builder_prompt()
-
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt}
@@ -62,7 +61,7 @@ class JSONBuilderAgent:
 
         try:
             response = client.chat.completions.create(
-                model="deepseek-reasoner",  # 你本地模型名
+                model="deepseek-reasoner",
                 messages=messages,
                 stream=False,
                 temperature=0.0
@@ -81,8 +80,10 @@ class JSONBuilderAgent:
             return
 
         for instr in json_array:
+            instr["trace_id"] = trace_id  # ✅ 强制覆写 trace_id
+            instr["intent_text"] = intent_text  # 可选：补全 intent_text
+            print(f"[JSONBuilderAgent] 📤 发送指令: {instr.get('action')} trace_id={trace_id}")
             send_intent(instr, sender="JSONBuilderAgent", trace_id=trace_id)
-
 
     def generate_json_instructions(self, plan_instr: dict) -> list:
         from backend.llm.prompt_templates import load_json_builder_prompt

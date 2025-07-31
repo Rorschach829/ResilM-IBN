@@ -204,7 +204,7 @@ if __name__ == '__main__':
 
 
 # 文件路径: ./tmp/intent_log_path.txt
-/data/gjw/Meta-IBN/logs/topo_20250725_172737.jsonl
+/data/gjw/Meta-IBN/logs/topo_20250729_163259.jsonl
 
 # 文件路径: ./backend/__init__.py
 
@@ -223,7 +223,7 @@ from backend.net_simulation.mininet_manager import run_mininet_code, get_current
 from backend.net_simulation.instruction_executor import execute_instruction
 import backend.net_simulation.mininet_manager as mm
 from backend.utils.token_utils import get_total_tokens
-from backend.utils.logger import log_intent
+from backend.utils.logger import log_intent, start_new_intent_log
 app = Flask(__name__, 
             template_folder="/data/gjw/Meta-IBN/frontend/templates", 
             static_folder="/data/gjw/Meta-IBN/frontend/static")
@@ -236,45 +236,13 @@ intent_agent = IntentAgent()
 def index():
     return render_template("index.html")
 
-# @app.route("/intent", methods=["POST"])
-# def handle_intent():
-#     data = request.json
-#     intent_text = data.get("intent", "")
-
-#     # 意图为空则直接返回
-#     if not intent_text:
-#         return jsonify({"error": "意图内容不能为空"}), 400
-
-#     try:
-#         # 注意：现在是列表（无论一个还是多个）
-#         instructions = intent_agent.intent_to_instruction(intent_text)
-#         all_outputs = []
-
-#         for instr in instructions:
-#             output = execute_instruction(instr)
-#             log_intent(intent_text, instr, output)
-#             all_outputs.append({
-#                 "action": instr.get("action"),
-#                 "result": output
-#             })
-
-#     except Exception as e:
-#         return jsonify({"error": f"指令执行失败: {str(e)}"}), 500
-
-#     return jsonify({
-#         "message": "✅ 所有指令执行完成",
-#         "instruction": instructions,
-#         "output": all_outputs,
-#         "success": True
-#     })
-
 @app.route("/intent", methods=["POST"])
 def handle_intent():
     data = request.json
     intent_text = data.get("intent", "")
     if not intent_text:
         return jsonify({"error": "意图内容不能为空"}), 400
-
+    
     try:
         instructions = intent_agent.intent_to_instruction(intent_text)
         all_outputs = []
@@ -289,6 +257,8 @@ def handle_intent():
                 steps = instr.get("steps", [])
 
                 for i, sub_instr in enumerate(json_instrs):
+                    sub_instr["intent_text"] = intent_text  # ✅ 注入原始意图！
+                    
                     result = execute_instruction(sub_instr)
                     all_outputs.append({
                         "step": steps[i] if i < len(steps) else None,
@@ -296,6 +266,8 @@ def handle_intent():
                         "result": result
                     })
             else:
+                instr["intent_text"] = intent_text  # ✅ 非 plan_steps 的也要注入！
+
                 result = execute_instruction(instr)
                 all_outputs.append({
                     "step": None,
@@ -311,6 +283,7 @@ def handle_intent():
         "output": all_outputs,
         "success": True
     })
+
 
 
 
@@ -367,17 +340,59 @@ def execute_instruction(instruction: dict) -> str:
         coordinator = _get_coordinator()
         instructions = [instruction]
         coordinator.handle_instruction_list(instructions)
-        return instructions[0].get("_result", "⚠️ 无执行结果")
+
+        result = instructions[0].get("_result", "⚠️ 无执行结果")
+
+        # ✅ 添加日志记录
+        log_intent(
+            intent_text=instruction.get("intent_text", "(未提供原始意图)"),
+            instruction=instruction,
+            result=result
+        )
+
+        return result
+
     except Exception as e:
-        return f"❌ 执行失败: {e}\n{traceback.format_exc()}"
+        error_msg = f"❌ 执行失败: {e}\n{traceback.format_exc()}"
+        # ✅ 失败也写日志
+        log_intent(
+            intent_text=instruction.get("intent_text", "(未提供原始意图)"),
+            instruction=instruction,
+            result=error_msg
+        )
+        return error_msg
+
 
 def execute_instruction_list(instruction_list: list[dict]) -> list[str]:
     try:
         coordinator = _get_coordinator()
         coordinator.handle_instruction_list(instruction_list)
-        return [instr.get("_result", "⚠️ 无执行结果") for instr in instruction_list]
+
+        results = []
+        for instr in instruction_list:
+            result = instr.get("_result", "⚠️ 无执行结果")
+            results.append(result)
+
+            # ✅ 每条指令单独记录日志
+            log_intent(
+                intent_text=instr.get("intent_text", "(未提供原始意图)"),
+                instruction=instr,
+                result=result
+            )
+
+        return results
+
     except Exception as e:
-        return [f"❌ 批量执行失败: {e}\n{traceback.format_exc()}"]
+        error_msg = f"❌ 批量执行失败: {e}\n{traceback.format_exc()}"
+        # ✅ 批量失败，全部写成失败记录
+        for instr in instruction_list:
+            log_intent(
+                intent_text=instr.get("intent_text", "(未提供原始意图)"),
+                instruction=instr,
+                result=error_msg
+            )
+        return [error_msg for _ in instruction_list]
+
 
 
 # 文件路径: ./backend/net_simulation/mininet_manager.py
@@ -1615,7 +1630,7 @@ class TopologyAgent:
   ]
 }}
 
-## 编写规则：
+编写规则：
 
 1. 每一个 Step 都应是清晰、完整的中文操作描述，避免模糊。
 2. 如果用户指令不完整或不清晰（如“创建一个复杂点的拓扑”），请根据经验进行智能补全：
@@ -1624,6 +1639,13 @@ class TopologyAgent:
 3. 如果用户指令非常简单，只包含一步，也必须以 Step 1 输出；
 4. 严格输出标准 JSON，不允许 markdown、注释、空行；
 5.请勿生成无法执行的总结性步骤，如‘比较结果’、‘记录日志’、‘观察变化’等，仅保留可被系统执行的具体操作步骤。
+6.默认认为当前系统里面已经存在了一个网络拓扑，除非用户明确表示了创建拓扑否则不要规划创建拓扑的步骤
+7.取消限速规则时，请直接执行删除操作，不要先检查主机是否有限速或是否存在限速规则。默认认为用户明确希望取消限速。
+8.如果意图是恢复两台主机之间的通信或连通性，不需要中间的“检查流表”步骤，请直接规划删除操作和连通性验证。
+9.删除主机限速后，如需执行带宽验证（verify_bandwidth），必须选择目标主机与源主机不同，例如选择任意一台与源主机互通的主机；并且不允许 src_host 和 dst_host 相同；
+
+
+
 
 用户意图：
 {intent_text}
@@ -1658,7 +1680,8 @@ class TopologyAgent:
 - 不允许空 key、None、null；
 - 数组以 `[` 开头，以 `]` 结尾，中间是多个合法 JSON 对象；
 - 所有数字用十进制，不允许 0x 表示。
-- 如果意图是恢复两台主机之间的通信或连通性，不需要中间的“检查流表”步骤，请直接规划删除操作和连通性验证。
+
+
 
 
 ---
@@ -1666,7 +1689,7 @@ class TopologyAgent:
 【支持的 action 类型说明】
 
 1. create_topology
-##一定要包含以下几个此条
+##一定要包含以下几个字段
 - hosts: ["h1", "h2"]
 - switches: ["s1"]
 - links: [{{"src": "h1", "dst": "s1"}}, {{"src": "h2", "dst": "s1"}}]
@@ -1733,16 +1756,18 @@ class TopologyAgent:
  - 步骤可能会使用“带宽”、“网速”、“速率”、“速度”等说法来表达 bandwidth；
  - 步骤可能会说“10M”、“10Mbps”、“10兆”、“10兆每秒”，都视为 10 Mbps；
  - 请统一将结果输出为整数 Mbps 并填入 rate_mbps 字段。
- 
- 7. verify_bandwidth
+ - 如果同时提供 src_host 和 dst_host，则只对两者间流量限速；
+ - 如果只提供 src_host，不提供 dst_host，则限制该主机所有出站流量；
+
+ 7. verify_bandwidth(测试两主机之间的速度)
     - src_host: 源主机名，如 "h1"
     - dst_host: 目标主机名，如 "h2"
  
- 8. clear_bandwidth_limit
+ 8. clear_bandwidth_limit(取消某主机的限速规则)
     - host: 要取消限速的主机名，如 "h1"
  说明：
  - 此意图用于取消对指定主机的所有限速规则；
- - 实现方法是调用 `tc qdisc del dev hX-eth0 root` 命令。
+
  
  9. link_down
     - link: 包含两个交换机名的数组，如 ["s1", "s3"]
@@ -2154,18 +2179,22 @@ SKIP_ACTIONS_ON_RECOVERY = {
 class TopologyManager:
 
     def create_topology(self, instruction: dict) -> str:
-            start_new_intent_log()
-            result = mm.rebuild_topology(instruction)
 
-            if mm.global_net:
-                net = mm.global_net
-                expected_hosts = len(net.hosts)
-                if self._wait_for_all_hosts(expected=expected_hosts):
-                    build_and_send_all_path_intents(net)
-                    print("[INTENT] 路径流表下发完成 ✅")
-                else:
-                    print(f"[INTENT] ❌ 等待超时，期望注册 {expected_hosts} 台主机，实际不足")
-            return result
+        result = mm.rebuild_topology(instruction)
+        # 在执行创建拓扑的时候创建新的日志文件
+        start_new_intent_log()
+        
+        if mm.global_net:
+            net = mm.global_net
+            expected_hosts = len(net.hosts)
+            if self._wait_for_all_hosts(expected=expected_hosts):
+                build_and_send_all_path_intents(net)
+                print("[INTENT] 路径流表下发完成 ✅")
+            else:
+                print(f"[INTENT] ❌ 等待超时，期望注册 {expected_hosts} 台主机，实际不足")
+
+        return result
+
 
     def shutdown_topology(self) -> str:
         return mm.stop_topology()
@@ -2473,6 +2502,7 @@ def validate_arp_connectivity(hosts_info: dict, expected_peers: list = None) -> 
 import os
 import json
 from datetime import datetime
+import glob
 
 BASE_LOG_DIR = "/data/gjw/Meta-IBN/logs"
 CURRENT_LOG_FILE = None  # 🆕 当前正在记录的文件路径（每次创建拓扑会更新它）
@@ -2495,6 +2525,7 @@ def start_new_intent_log():
     with open(os.path.join(tmp_dir, "intent_log_path.txt"), "w") as f:
         f.write(CURRENT_LOG_FILE)
 
+    clean_old_logs(max_keep=2)
     return CURRENT_LOG_FILE
 
 def get_latest_log_file():
@@ -2524,6 +2555,22 @@ def log_intent(intent_text: str, instruction: dict, result: str):
 
     with open(CURRENT_LOG_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(log_entry, ensure_ascii=False, indent=2) + "\n\n")
+
+# 清理旧的日志文件，只保留最近3个
+def clean_old_logs(max_keep: int = 2):
+    log_files = sorted(
+        glob.glob(os.path.join(BASE_LOG_DIR, "topo_*.jsonl")),
+        key=os.path.getmtime,
+        reverse=True
+    )
+
+    to_delete = log_files[max_keep:]  # 超出保留数量的文件
+    for f in to_delete:
+        try:
+            os.remove(f)
+            print(f"[LOG CLEAN] 已删除旧日志文件: {f}")
+        except Exception as e:
+            print(f"[LOG CLEAN] 删除失败: {f}, 错误: {e}")
 
 
 # 文件路径: ./backend/utils/messagepool_utils.py

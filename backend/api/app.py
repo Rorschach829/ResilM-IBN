@@ -12,6 +12,8 @@ app = Flask(__name__,
 CORS(app, resources={r"/*": {"origins": "*"}})
 from backend.utils.messagepool_utils import send_intent
 from backend.agents.json_builder_agent import JSONBuilderAgent
+import uuid
+from backend.coordinator.message_pool import message_pool
 intent_agent = IntentAgent()
 
 @app.route("/")
@@ -24,51 +26,25 @@ def handle_intent():
     intent_text = data.get("intent", "")
     if not intent_text:
         return jsonify({"error": "意图内容不能为空"}), 400
-    
+
     try:
         instructions = intent_agent.intent_to_instruction(intent_text)
-        all_outputs = []
+        trace_id = str(uuid.uuid4())
 
         for instr in instructions:
-            action = instr.get("action", "")
+            instr["intent_text"] = intent_text
+            instr["trace_id"] = trace_id
+            message_pool.publish(instr, sender="IntentAgent")
 
-            if action == "plan_steps":
-                from backend.agents.json_builder_agent import JSONBuilderAgent
-                jb = JSONBuilderAgent()
-                json_instrs = jb.generate_json_instructions(instr)
-                steps = instr.get("steps", [])
-
-                for i, sub_instr in enumerate(json_instrs):
-                    sub_instr["intent_text"] = intent_text  # ✅ 注入原始意图！
-                    
-                    result = execute_instruction(sub_instr)
-                    all_outputs.append({
-                        "step": steps[i] if i < len(steps) else None,
-                        "action": sub_instr.get("action"),
-                        "result": result
-                    })
-            else:
-                instr["intent_text"] = intent_text  # ✅ 非 plan_steps 的也要注入！
-
-                result = execute_instruction(instr)
-                all_outputs.append({
-                    "step": None,
-                    "action": instr.get("action"),
-                    "result": result
-                })
+        return jsonify({
+            "message": "✅ 指令已成功发布至多智能体系统",
+            "trace_id": trace_id,
+            "instruction_count": len(instructions),
+            "success": True
+        })
 
     except Exception as e:
-        return jsonify({"error": f"指令执行失败: {str(e)}"}), 500
-
-    return jsonify({
-        "message": "✅ 所有指令执行完成",
-        "output": all_outputs,
-        "success": True
-    })
-
-
-
-
+        return jsonify({"error": f"指令处理失败: {str(e)}"}), 500
 
 # 获取当前拓扑
 @app.route("/topology", methods=["GET"])
