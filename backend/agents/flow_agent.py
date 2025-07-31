@@ -1,6 +1,8 @@
 from backend.coordinator.message_pool import message_pool
 from backend.agent_core.flowtable_manager import FlowTableManager
 from backend.utils.logger import record_agent_result
+from backend.utils.messagepool_utils import send_intent
+import time
 class FlowAgent:
     def __init__(self):
         self.manager = FlowTableManager()
@@ -9,6 +11,7 @@ class FlowAgent:
         message_pool.subscribe("get_flowtable", self.handle_get)
         message_pool.subscribe("limit_bandwidth", self.handle_limit_bw)
         message_pool.subscribe("clear_bandwidth_limit", self.handle_clear_bw)
+        message_pool.subscribe("repair_suggestion", self.handle_repair_suggestion)
 
     def handle_install(self, message: dict):
         if "triggered_by" in message:
@@ -40,3 +43,47 @@ class FlowAgent:
         result = self.manager.clear_bandwidth_limit(message)
         message["_result"] = result
         record_agent_result(message, result, "FlowAgent")
+
+    def handle_repair_suggestion(self, message: dict):
+        if not message.get("auto_fix", False):
+            print("[FlowAgent] ❌ 未授权自动修复，忽略 repair_suggestion")
+            return
+
+        print("[FlowAgent] ✅ 接收到 QAAgent 的修复建议，准备执行修复操作")
+
+        switches = message.get("switches", [])
+        match = message.get("match", {})
+        trace_id = message.get("trace_id")
+
+        # 记录一下建议来源
+        reason = message.get("reason", "unspecified")
+        print(f"[FlowAgent] 修复建议说明: {reason}")
+
+        # 发送 delete_flowtable 指令（清空相关交换机）
+        delete_msg = {
+            "action": "delete_flowtable",
+            "switches": switches,
+            "match": match
+        }
+        send_intent(delete_msg, sender="FlowAgent", trace_id=trace_id)
+
+        # 等待 1 秒，避免删除未完成
+        time.sleep(1)
+
+        # 发送 install_flowtable 指令（重新安装允许规则）
+        install_msg = {
+            "action": "install_flowtable",
+            "switches": switches,
+            "extra": {
+                "match": match,
+                "actions": "ALLOW",
+                "priority": 100
+            },
+            "triggered_by": {
+                "agent": "QAAgent",
+                "reason": reason
+            }
+        }
+        send_intent(install_msg, sender="FlowAgent", trace_id=trace_id)
+
+        print(f"[FlowAgent] ✅ delete + install 指令已转发至消息池")

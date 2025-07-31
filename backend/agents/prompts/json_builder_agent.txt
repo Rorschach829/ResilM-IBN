@@ -89,13 +89,41 @@
   "switches": ["s1"]
 }
 
-
 4. ping_test
    - hosts: 所涉及主机名列表，如 ["h1", "h2"]
-   - extra: {{
-       "source": 源主机名，如 "h1",
-       "target": 目标主机 IP 地址，如 "10.0.0.2",
-     }}
+   - extra 字段中可包含以下键：
+     - source: 源主机名，如 "h1"
+     - target: 目标主机 IP 地址，如 "10.0.0.2"
+     - expect_result: （可选）期望结果，若设置为 "success"，表示系统应判断 ping 是否成功
+     - auto_fix: （可选）若为 true，表示允许系统在 ping 失败时尝试自动修复（由 QAAgent 判断并执行）
+
+示例：
+用户意图：测试 h1 和 h2 的连通性
+应输出：
+{{
+  "action": "ping_test",
+  "hosts": ["h1", "h2"],
+  "extra": {{
+    "source": "h1",
+    "target": "10.0.0.2"
+  }}
+}}
+
+
+示例：
+用户意图：测试 h1 和 h2 的连通性，如果不通请自动修复。
+应输出：
+{{
+  "action": "ping_test",
+  "hosts": ["h1", "h2"],
+  "extra": {{
+    "source": "h1",
+    "target": "10.0.0.2",
+    "expect_result": "success",
+    "auto_fix": true
+  }}
+}}
+
 
 
 5. get_flowtable
