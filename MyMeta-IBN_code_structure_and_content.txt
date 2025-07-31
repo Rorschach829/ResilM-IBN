@@ -204,7 +204,7 @@ if __name__ == '__main__':
 
 
 # 文件路径: ./tmp/intent_log_path.txt
-/data/gjw/Meta-IBN/logs/topo_20250731_145755.jsonl
+/data/gjw/Meta-IBN/logs/topo_20250731_162015.jsonl
 
 # 文件路径: ./backend/__init__.py
 
@@ -1232,7 +1232,7 @@ class TopologyRestController(ControllerBase):
 # 文件路径: ./backend/agents/flow_agent.py
 from backend.coordinator.message_pool import message_pool
 from backend.agent_core.flowtable_manager import FlowTableManager
-
+from backend.utils.logger import record_agent_result
 class FlowAgent:
     def __init__(self):
         self.manager = FlowTableManager()
@@ -1251,22 +1251,27 @@ class FlowAgent:
 
         result = self.manager.install_rule(message)
         message["_result"] = result
+        record_agent_result(message, result, "FlowAgent")
 
     def handle_delete(self, message: dict):
         result = self.manager.delete_rule(message)
         message["_result"] = result
+        record_agent_result(message, result, "FlowAgent")
 
     def handle_get(self, message: dict):
         result = self.manager.query_table(message)
         message["_result"] = result
+        record_agent_result(message, result, "FlowAgent")
 
     def handle_limit_bw(self, message: dict):
         result = self.manager.limit_bandwidth(message)
         message["_result"] = result
+        record_agent_result(message, result, "FlowAgent")
 
     def handle_clear_bw(self, message: dict):
         result = self.manager.clear_bandwidth_limit(message)
         message["_result"] = result
+        record_agent_result(message, result, "FlowAgent")
 
 
 # 文件路径: ./backend/agents/intent_agent.py
@@ -1448,7 +1453,7 @@ class JSONBuilderAgent:
 
         try:
             response = client.chat.completions.create(
-                model="deepseek-reasoner",
+                model="deepseek-chat",
                 messages=messages,
                 stream=False,
                 temperature=0.0
@@ -1520,6 +1525,8 @@ import time
 from backend.agent_core.qa_manager import QAManager
 from backend.coordinator.message_pool import message_pool
 from backend.utils.messagepool_utils import send_intent
+from backend.utils.logger import record_agent_result
+
 class QAAgent:
     def __init__(self):
         self.manager = QAManager()
@@ -1536,20 +1543,24 @@ class QAAgent:
             repair_intent["triggered_by"] = message.get("sender", "Unknown")
             send_intent(repair_intent, sender="QAAgent", trace_id=trace_id)
 
+        record_agent_result(message, output, "QAAgent")
+
     def handle_ping_all(self, message: dict):
         result = self.manager.ping_all()
         message["_result"] = result
+        record_agent_result(message, result, "QAAgent")
 
     def handle_verify_bw(self, message: dict):
         result = self.manager.verify_bandwidth(message)
         message["_result"] = result
+        record_agent_result(message, result, "QAAgent")
 
 
 
 # 文件路径: ./backend/agents/topology_agent.py
 from backend.coordinator.message_pool import message_pool
 from backend.agent_core.topology_manager import TopologyManager
-
+from backend.utils.logger import record_agent_result
 class TopologyAgent:
     def __init__(self):
         self.manager = TopologyManager()
@@ -1560,14 +1571,19 @@ class TopologyAgent:
     def handle_create(self, message: dict):
         result = self.manager.create_topology(message)
         message["_result"] = result
+        
+        record_agent_result(message, result, "TopologyAgent")
+
 
     def handle_link_down(self, message: dict):
         result = self.manager.link_down(message)
         message["_result"] = result
+        record_agent_result(message, result, "TopologyAgent")
 
     def handle_link_up(self, message: dict):
         result = self.manager.link_up(message)
         message["_result"] = result
+        record_agent_result(message, result, "TopologyAgent")
    
 
 
@@ -1639,7 +1655,8 @@ class TopologyAgent:
 6.默认认为当前系统里面已经存在了一个网络拓扑，除非用户明确表示了创建拓扑否则不要规划创建拓扑的步骤
 7.取消限速规则时，请直接执行删除操作，不要先检查主机是否有限速或是否存在限速规则。默认认为用户明确希望取消限速。
 8.如果意图是恢复两台主机之间的通信或连通性，不需要中间的“检查流表”步骤，请直接规划删除操作和连通性验证。
-9.删除主机限速后，如需执行带宽验证（verify_bandwidth），必须选择目标主机与源主机不同，例如选择任意一台与源主机互通的主机；并且不允许 src_host 和 dst_host 相同；
+9.删除主机限速后，如需执行带宽验证（verify_bandwidth），必须选择一台与源主机互通主机编号加一的主机。例如限速的是主机h1，则测试主机h1到h2之间的速度。
+10. 当用户进行断链（如 link_down）操作时，禁止自动添加 ping_all 或全局连通性测试步骤，除非用户明确要求测试所有主机连通性。
 
 
 
@@ -2573,6 +2590,20 @@ def clean_old_logs(max_keep: int = 2):
             print(f"[LOG CLEAN] 已删除旧日志文件: {f}")
         except Exception as e:
             print(f"[LOG CLEAN] 删除失败: {f}, 错误: {e}")
+
+# 将结果记录到json文件当中
+def record_agent_result(message: dict, result: str, agent_name: str, extra_info: str = ""):
+    intent_text = message.get("intent_text", "(未提供原始意图)")
+    record = {
+        "trace_id": message.get("trace_id"),
+        "sender": agent_name,
+        "action": message.get("action"),
+        "result": result
+    }
+    if extra_info:
+        record["info"] = extra_info
+
+    log_intent(intent_text, message, result)
 
 
 # 文件路径: ./backend/utils/messagepool_utils.py

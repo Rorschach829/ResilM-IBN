@@ -64,8 +64,12 @@
   - nw_dst: 目的 IP 地址
   - nw_proto: 1（表示阻断 ping 的规则）
 - actions、priority 字段不需要设置，但 match 字段必须与 install_flowtable 完全一致
+- 如果需要清空某交换机上的所有流表条目，可省略 match 字段，表示匹配全部。
 
 示例：
+
+用户意图:"清除s1上阻断h1和h2通信的流表"
+应输出：
 {{
   "action": "delete_flowtable",
   "switches": ["s1"],
@@ -76,6 +80,15 @@
     "nw_proto": 1
   }}
 }}
+
+用户意图："清除 s1 上的所有流表"
+
+应输出：
+{
+  "action": "delete_flowtable",
+  "switches": ["s1"]
+}
+
 
 4. ping_test
    - hosts: 所涉及主机名列表，如 ["h1", "h2"]

@@ -61,18 +61,25 @@ class FlowTableManager:
 
         return "\n".join(results)
 
+
+    
     def delete_rule(self, instruction: dict) -> str:
         results = []
 
-        # 强制自动补全路径交换机
+        # 自动补全交换机（可选）
         auto_fix_switches_by_intent(instruction)
         switches = instruction.get("switches", [])
         match = instruction.get("match", {}) or instruction.get("extra", {}).get("match", {})
 
-        if not switches or not match:
-            return "❌ 参数错误：未提供交换机或匹配字段"
+        if not switches:
+            return "❌ 参数错误：未提供交换机列表"
 
-        # 提取 IP 字段用于反向构造
+        if not match:  # 🆕 如果没有提供 match，就清空所有流表
+            for sw in switches:
+                results.append(self._delete_all_flows(sw))
+            return "\n".join(results)
+
+        # 若提供 match，则继续执行原有删除逻辑
         src_ip = match.get("nw_src")
         dst_ip = match.get("nw_dst")
         proto = match.get("nw_proto")
@@ -82,7 +89,7 @@ class FlowTableManager:
         for sw in switches:
             results.append(self._delete_on_switches(sw, match))
 
-        # ✅ 自动构造反向匹配规则（每个交换机都删）
+        # ✅ 自动构造反向规则
         if src_ip and dst_ip:
             reverse_match = {
                 "nw_src": dst_ip,
@@ -95,8 +102,30 @@ class FlowTableManager:
 
         return "\n".join(results)
 
+    # 删除某交换机上所有流表
+    def _delete_all_flows(self, sw: str) -> str:
+        try:
+            dpid = convert_switch_name_to_dpid(sw)
+        except ValueError as e:
+            return f"❌ 无法识别交换机 {sw}: {e}"
+
+        payload = {
+            "dpid": dpid,
+            "match": {}  # 空 match 表示删除所有流表
+        }
+
+        try:
+            resp = requests.post("http://localhost:8081/stats/flowentry/delete", json=payload)
+            print(f"[delete_rule] 正在清空 {sw} 上所有流表")
+            if resp.status_code != 200:
+                return f"❌ 删除失败，交换机 {sw} 返回码 {resp.status_code}"
+        except Exception as e:
+            return f"❌ 删除失败: {e}"
+
+        return f"✅ 清空 {sw} 上所有流表成功"
 
 
+    # 精确删除某条规则
     def _delete_on_switches(self, sw: str, match: Dict[str, Any]):
         try:
             dpid = convert_switch_name_to_dpid(sw)
