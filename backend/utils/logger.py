@@ -8,6 +8,11 @@ import glob
 BASE_LOG_DIR = "/data/gjw/Meta-IBN/logs"
 CURRENT_LOG_FILE = None  # 🆕 当前正在记录的文件路径（每次创建拓扑会更新它）
 
+# 初始化
+def init_logger():
+    global CURRENT_LOG_FILE
+    CURRENT_LOG_FILE = None
+
 # backend/utils/logger.py
 def start_new_intent_log():
     global CURRENT_LOG_FILE
@@ -72,3 +77,17 @@ def clean_old_logs(max_keep: int = 2):
             print(f"[LOG CLEAN] 已删除旧日志文件: {f}")
         except Exception as e:
             print(f"[LOG CLEAN] 删除失败: {f}, 错误: {e}")
+
+# 将结果记录到json文件当中
+def record_agent_result(message: dict, result: str, agent_name: str, extra_info: str = ""):
+    intent_text = message.get("intent_text", "(未提供原始意图)")
+    record = {
+        "trace_id": message.get("trace_id"),
+        "sender": agent_name,
+        "action": message.get("action"),
+        "result": result
+    }
+    if extra_info:
+        record["info"] = extra_info
+
+    log_intent(intent_text, message, result)

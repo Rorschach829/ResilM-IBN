@@ -1,6 +1,6 @@
 from backend.coordinator.message_pool import message_pool
 from backend.agent_core.topology_manager import TopologyManager
-
+from backend.utils.logger import record_agent_result
 class TopologyAgent:
     def __init__(self):
         self.manager = TopologyManager()
@@ -11,12 +11,17 @@ class TopologyAgent:
     def handle_create(self, message: dict):
         result = self.manager.create_topology(message)
         message["_result"] = result
+        
+        record_agent_result(message, result, "TopologyAgent")
+
 
     def handle_link_down(self, message: dict):
         result = self.manager.link_down(message)
         message["_result"] = result
+        record_agent_result(message, result, "TopologyAgent")
 
     def handle_link_up(self, message: dict):
         result = self.manager.link_up(message)
         message["_result"] = result
+        record_agent_result(message, result, "TopologyAgent")
    

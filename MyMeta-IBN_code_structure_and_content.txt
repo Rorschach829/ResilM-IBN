@@ -204,7 +204,7 @@ if __name__ == '__main__':
 
 
 # 文件路径: ./tmp/intent_log_path.txt
-/data/gjw/Meta-IBN/logs/topo_20250729_163259.jsonl
+/data/gjw/Meta-IBN/logs/topo_20250731_145755.jsonl
 
 # 文件路径: ./backend/__init__.py
 
@@ -223,13 +223,18 @@ from backend.net_simulation.mininet_manager import run_mininet_code, get_current
 from backend.net_simulation.instruction_executor import execute_instruction
 import backend.net_simulation.mininet_manager as mm
 from backend.utils.token_utils import get_total_tokens
-from backend.utils.logger import log_intent, start_new_intent_log
+from backend.utils.logger import log_intent, start_new_intent_log,init_logger
 app = Flask(__name__, 
             template_folder="/data/gjw/Meta-IBN/frontend/templates", 
             static_folder="/data/gjw/Meta-IBN/frontend/static")
 CORS(app, resources={r"/*": {"origins": "*"}})
 from backend.utils.messagepool_utils import send_intent
 from backend.agents.json_builder_agent import JSONBuilderAgent
+import uuid
+from backend.coordinator.message_pool import message_pool
+
+init_logger()
+
 intent_agent = IntentAgent()
 
 @app.route("/")
@@ -242,51 +247,27 @@ def handle_intent():
     intent_text = data.get("intent", "")
     if not intent_text:
         return jsonify({"error": "意图内容不能为空"}), 400
-    
+
     try:
         instructions = intent_agent.intent_to_instruction(intent_text)
-        all_outputs = []
+        if any(instr.get("action") == "create_topology" for instr in instructions):
+            start_new_intent_log()
+        trace_id = str(uuid.uuid4())
 
         for instr in instructions:
-            action = instr.get("action", "")
+            instr["intent_text"] = intent_text
+            instr["trace_id"] = trace_id
+            message_pool.publish(instr, sender="IntentAgent")
 
-            if action == "plan_steps":
-                from backend.agents.json_builder_agent import JSONBuilderAgent
-                jb = JSONBuilderAgent()
-                json_instrs = jb.generate_json_instructions(instr)
-                steps = instr.get("steps", [])
-
-                for i, sub_instr in enumerate(json_instrs):
-                    sub_instr["intent_text"] = intent_text  # ✅ 注入原始意图！
-                    
-                    result = execute_instruction(sub_instr)
-                    all_outputs.append({
-                        "step": steps[i] if i < len(steps) else None,
-                        "action": sub_instr.get("action"),
-                        "result": result
-                    })
-            else:
-                instr["intent_text"] = intent_text  # ✅ 非 plan_steps 的也要注入！
-
-                result = execute_instruction(instr)
-                all_outputs.append({
-                    "step": None,
-                    "action": instr.get("action"),
-                    "result": result
-                })
+        return jsonify({
+            "message": "✅ 指令已成功发布至多智能体系统",
+            "trace_id": trace_id,
+            "instruction_count": len(instructions),
+            "success": True
+        })
 
     except Exception as e:
-        return jsonify({"error": f"指令执行失败: {str(e)}"}), 500
-
-    return jsonify({
-        "message": "✅ 所有指令执行完成",
-        "output": all_outputs,
-        "success": True
-    })
-
-
-
-
+        return jsonify({"error": f"指令处理失败: {str(e)}"}), 500
 
 # 获取当前拓扑
 @app.route("/topology", methods=["GET"])
@@ -307,7 +288,9 @@ def stop():
 def token_stats():
     return jsonify({"total_tokens": get_total_tokens()})
 
+
 if __name__ == "__main__":
+    init_logger()
     app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
 
 
@@ -1370,11 +1353,8 @@ class IntentAgent:
                 raise Exception("返回内容既不是 JSON 对象也不是数组")
         except json.JSONDecodeError as e:
             raise Exception(f"LLM 返回内容不是有效JSON: {e}\n内容:\n{content}")
-
+    
     def send_instruction(self, intent_text: str):
-        """
-        核心入口：解析自然语言意图，转换为结构化指令，并统一发送到 message_pool
-        """
         try:
             instructions = self.intent_to_instruction(intent_text)
         except Exception as e:
@@ -1385,7 +1365,23 @@ class IntentAgent:
         print(f"[IntentAgent] ✅ 拆解为 {len(instructions)} 条指令，trace_id={trace_id}")
 
         for instr in instructions:
-            send_intent(instr, sender="IntentAgent", trace_id=trace_id)
+            send_intent(instr, sender="IntentAgent", trace_id=trace_id)  # ✅ 统一传入 trace_id
+
+    # def send_instruction(self, intent_text: str):
+    #     """
+    #     核心入口：解析自然语言意图，转换为结构化指令，并统一发送到 message_pool
+    #     """
+    #     try:
+    #         instructions = self.intent_to_instruction(intent_text)
+    #     except Exception as e:
+    #         print(f"[IntentAgent] ❌ 指令解析失败: {e}")
+    #         return
+
+    #     trace_id = str(uuid.uuid4())
+    #     print(f"[IntentAgent] ✅ 拆解为 {len(instructions)} 条指令，trace_id={trace_id}")
+
+    #     for instr in instructions:
+    #         send_intent(instr, sender="IntentAgent", trace_id=trace_id)
 
 
 # 文件路径: ./backend/agents/json_builder_agent.py
@@ -1402,15 +1398,16 @@ from typing import List, Optional
 class JSONBuilderAgent:
     def __init__(self):
         self.name = "JSONBuilderAgent"
-        message_pool.subscribe("plan_steps", self.generate_json_instructions)
+        message_pool.subscribe("plan_steps", self.handle_plan)
 
     def handle_plan(self, message: dict):
-
         steps = message.get("steps", [])
         intent_text = message.get("intent_text", "")
-        trace_id = message.get("trace_id", str(uuid.uuid4()))
 
-        print(f"[JSONBuilderAgent] ✅ 批处理 {len(steps)} 条步骤")
+        assert "trace_id" in message, "[JSONBuilderAgent] ❌ 缺少 trace_id"
+        trace_id = message["trace_id"]
+
+        print(f"[JSONBuilderAgent] ✅ 批处理 {len(steps)} 条步骤，trace_id={trace_id}")
 
         # === 跳过拓扑创建步骤，如果当前拓扑已存在 ===
         try:
@@ -1425,7 +1422,7 @@ class JSONBuilderAgent:
         except Exception as e:
             print(f"[JSONBuilderAgent] ⚠️ 无法访问拓扑接口，保留所有步骤: {e}")
 
-        # === 自动提取路径信息上下文（如 h9 和 h10） ===
+        # === 自动注入路径信息上下文 ===
         extra_context = None
         host_matches = re.findall(r'\bh\d+\b', intent_text)
         if len(host_matches) >= 2:
@@ -1440,12 +1437,10 @@ class JSONBuilderAgent:
             except Exception as e:
                 print(f"[JSONBuilderAgent] ⚠️ 查询 shortest_path 接口失败: {e}")
 
-        # === 构建 Prompt（用户步骤 + 路径上下文） ===
+        # === 构建 Prompt ===
         prompt = self.build_batch_prompt(steps, extra_context=extra_context)
 
-        # === 加载 system prompt 模板 ===
         system_prompt = load_json_builder_prompt()
-
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt}
@@ -1453,7 +1448,7 @@ class JSONBuilderAgent:
 
         try:
             response = client.chat.completions.create(
-                model="deepseek-reasoner",  # 你本地模型名
+                model="deepseek-reasoner",
                 messages=messages,
                 stream=False,
                 temperature=0.0
@@ -1472,8 +1467,10 @@ class JSONBuilderAgent:
             return
 
         for instr in json_array:
+            instr["trace_id"] = trace_id  # ✅ 强制覆写 trace_id
+            instr["intent_text"] = intent_text  # 可选：补全 intent_text
+            print(f"[JSONBuilderAgent] 📤 发送指令: {instr.get('action')} trace_id={trace_id}")
             send_intent(instr, sender="JSONBuilderAgent", trace_id=trace_id)
-
 
     def generate_json_instructions(self, plan_instr: dict) -> list:
         from backend.llm.prompt_templates import load_json_builder_prompt
@@ -2506,6 +2503,11 @@ import glob
 
 BASE_LOG_DIR = "/data/gjw/Meta-IBN/logs"
 CURRENT_LOG_FILE = None  # 🆕 当前正在记录的文件路径（每次创建拓扑会更新它）
+
+# 初始化
+def init_logger():
+    global CURRENT_LOG_FILE
+    CURRENT_LOG_FILE = None
 
 # backend/utils/logger.py
 def start_new_intent_log():

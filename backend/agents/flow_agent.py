@@ -1,6 +1,6 @@
 from backend.coordinator.message_pool import message_pool
 from backend.agent_core.flowtable_manager import FlowTableManager
-
+from backend.utils.logger import record_agent_result
 class FlowAgent:
     def __init__(self):
         self.manager = FlowTableManager()
@@ -19,19 +19,24 @@ class FlowAgent:
 
         result = self.manager.install_rule(message)
         message["_result"] = result
+        record_agent_result(message, result, "FlowAgent")
 
     def handle_delete(self, message: dict):
         result = self.manager.delete_rule(message)
         message["_result"] = result
+        record_agent_result(message, result, "FlowAgent")
 
     def handle_get(self, message: dict):
         result = self.manager.query_table(message)
         message["_result"] = result
+        record_agent_result(message, result, "FlowAgent")
 
     def handle_limit_bw(self, message: dict):
         result = self.manager.limit_bandwidth(message)
         message["_result"] = result
+        record_agent_result(message, result, "FlowAgent")
 
     def handle_clear_bw(self, message: dict):
         result = self.manager.clear_bandwidth_limit(message)
         message["_result"] = result
+        record_agent_result(message, result, "FlowAgent")

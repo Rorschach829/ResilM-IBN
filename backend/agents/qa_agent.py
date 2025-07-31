@@ -2,6 +2,8 @@ import time
 from backend.agent_core.qa_manager import QAManager
 from backend.coordinator.message_pool import message_pool
 from backend.utils.messagepool_utils import send_intent
+from backend.utils.logger import record_agent_result
+
 class QAAgent:
     def __init__(self):
         self.manager = QAManager()
@@ -18,11 +20,15 @@ class QAAgent:
             repair_intent["triggered_by"] = message.get("sender", "Unknown")
             send_intent(repair_intent, sender="QAAgent", trace_id=trace_id)
 
+        record_agent_result(message, output, "QAAgent")
+
     def handle_ping_all(self, message: dict):
         result = self.manager.ping_all()
         message["_result"] = result
+        record_agent_result(message, result, "QAAgent")
 
     def handle_verify_bw(self, message: dict):
         result = self.manager.verify_bandwidth(message)
         message["_result"] = result
+        record_agent_result(message, result, "QAAgent")
 
