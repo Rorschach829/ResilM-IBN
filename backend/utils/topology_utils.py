@@ -151,7 +151,7 @@ def robust_ping_pairs_multi_thread(net, max_workers=20, batch_size=50):
                 futures.append(executor.submit(ping_and_store, src, dst, idx))
             for future in futures:
                 future.result()
-        time.sleep(0.5)
+        # time.sleep(0.5)
 
     elapsed = time.time() - start_time
     print(f"[完成] 所有主机对 ping 测试已完成，总耗时：{elapsed:.2f} 秒")

@@ -24,6 +24,9 @@ from backend.agents.qa_agent import QAAgent
 from backend.agents.topology_agent import TopologyAgent
 from backend.agents.json_builder_agent import JSONBuilderAgent
 from backend.agents.intent_agent import IntentAgent
+from backend.agents.executor_agent import ExecutorAgent
+
+
 
 def main():
     # ✅ 初始化所有 Agent（独立，互不依赖）
@@ -33,6 +36,7 @@ def main():
     json_builder_agent = JSONBuilderAgent()
     # coordinator = CoordinatorAgent()
     intent_agent = IntentAgent()
+    executor_agent = ExecutorAgent()
     print("✅ 所有 Agent 初始化完成")
 
 # ✅ 设置 Ryu 日志写入文件（避免和 Flask 冲突）
