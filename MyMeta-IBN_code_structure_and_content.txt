@@ -22,6 +22,7 @@ Meta-IBN/
             controller_instance.py
             ryu_topology_rest.py
         agents/
+            executor_agent.py
             flow_agent.py
             intent_agent.py
             json_builder_agent.py
@@ -142,6 +143,9 @@ from backend.agents.qa_agent import QAAgent
 from backend.agents.topology_agent import TopologyAgent
 from backend.agents.json_builder_agent import JSONBuilderAgent
 from backend.agents.intent_agent import IntentAgent
+from backend.agents.executor_agent import ExecutorAgent
+
+
 
 def main():
     # ✅ 初始化所有 Agent（独立，互不依赖）
@@ -151,6 +155,7 @@ def main():
     json_builder_agent = JSONBuilderAgent()
     # coordinator = CoordinatorAgent()
     intent_agent = IntentAgent()
+    executor_agent = ExecutorAgent()
     print("✅ 所有 Agent 初始化完成")
 
 # ✅ 设置 Ryu 日志写入文件（避免和 Flask 冲突）
@@ -204,7 +209,7 @@ if __name__ == '__main__':
 
 
 # 文件路径: ./tmp/intent_log_path.txt
-/data/gjw/Meta-IBN/logs/topo_20250731_204057.jsonl
+/data/gjw/Meta-IBN/logs/topo_20250801_170338.jsonl
 
 # 文件路径: ./backend/__init__.py
 
@@ -1229,6 +1234,42 @@ class TopologyRestController(ControllerBase):
                         body=json.dumps(body).encode('utf-8'))
 
 
+# 文件路径: ./backend/agents/executor_agent.py
+# backend/agents/executor_agent.py
+
+import time
+from backend.coordinator.message_pool import message_pool
+from backend.utils.logger import record_agent_result
+
+class ExecutorAgent:
+    def __init__(self):
+        self.name = "ExecutorAgent"
+        for action in ["wait", "print", "noop"]:
+            message_pool.subscribe(action, self.handle)
+        print(f"[ExecutorAgent] ✅ 已注册 wait / print / noop 等通用指令")
+
+    def handle(self, message: dict):
+        action = message.get("action")
+        if action == "wait":
+            duration = message.get("duration", 5)
+            print(f"[ExecutorAgent] ⏱️ 正在等待 {duration} 秒...")
+            time.sleep(duration)
+            message["_result"] = f"✅ 已等待 {duration} 秒"
+            result = message["_result"]
+            record_agent_result(message, result, "ExecutorAgent")
+
+        elif action == "print":
+            msg = message.get("text", "(空)")
+            print(f"[ExecutorAgent][打印]: {msg}")
+            message["_result"] = f"🖨️ 已打印: {msg}"
+        elif action == "noop":
+            print(f"[ExecutorAgent] ⏭️ 收到 noop，占位跳过")
+            message["_result"] = "⏭️ 已跳过（noop）"
+        else:
+            print(f"[ExecutorAgent] ⚠️ 未知指令: {action}")
+            message["_result"] = f"❌ 不支持的控制指令: {action}"
+
+
 # 文件路径: ./backend/agents/flow_agent.py
 from backend.coordinator.message_pool import message_pool
 from backend.agent_core.flowtable_manager import FlowTableManager
@@ -1728,11 +1769,11 @@ class TopologyAgent:
 7.取消限速规则时，请直接执行删除操作，不要先检查主机是否有限速或是否存在限速规则。默认认为用户明确希望取消限速。
 8.如果意图是恢复两台主机之间的通信或连通性，不需要中间的“检查流表”步骤，请直接规划删除操作和连通性验证。
 9.删除主机限速后，如需执行带宽验证（verify_bandwidth），必须选择一台与源主机互通主机编号加一的主机。例如限速的是主机h1，则测试主机h1到h2之间的速度。
-10. 当用户进行断链（如 link_down）操作时，禁止自动添加 ping_all 或全局连通性测试步骤，除非用户明确要求测试所有主机连通性。
-11. 若系统已有拓扑存在，禁止在“查看流表”、“检查主机”、“验证连通性”等信息查询类意图中生成 create_topology 步骤。
-12. 查询类意图（如：查看流表、查看主机、查看链路）不应主动触发任何拓扑变更或拓扑创建指令。
-13. 用户意图中包含“如果不通请修复”等表达时，默认只生成 ping_test 这一个步骤，其他修复步骤交由 QAAgent 根据执行结果判断是否执行，避免提前生成 delete/install 指令。
-
+10.当用户进行断链（如 link_down）操作时，禁止自动添加 ping_all 或全局连通性测试步骤，除非用户明确要求测试所有主机连通性。
+11.若系统已有拓扑存在，禁止在“查看流表”、“检查主机”、“验证连通性”等信息查询类意图中生成 create_topology 步骤。
+12.查询类意图（如：查看流表、查看主机、查看链路）不应主动触发任何拓扑变更或拓扑创建指令。
+13.用户意图中包含“如果不通请修复”等表达时，默认只生成 ping_test 这一个步骤，其他修复步骤交由 QAAgent 根据执行结果判断是否执行，避免提前生成 delete/install 指令。
+14.如果用户明确提到“等待 N 秒”、“延迟后执行”、“N秒后恢复通信”等表达，请拆解为一个单独的步骤
 
 
 
@@ -1759,6 +1800,7 @@ class TopologyAgent:
 - link_down
 - link_up
 - ping_all
+- wait
 ---
 
 【输出要求】：
@@ -1769,6 +1811,7 @@ class TopologyAgent:
 - 不允许空 key、None、null；
 - 数组以 `[` 开头，以 `]` 结尾，中间是多个合法 JSON 对象；
 - 所有数字用十进制，不允许 0x 表示。
+- 若步骤描述涉及主机但无明确主机名，默认使用 h1 和 h2；
 
 
 
@@ -1916,6 +1959,12 @@ class TopologyAgent:
  11. ping_all
     - 无参数，表示对当前网络中的所有主机执行 ping_all 连通性测试
 
+ 12. wait
+    - 如果步骤描述为“等待 N 秒”,“暂停”,“N秒后”(其中N为步骤中的秒数)则生成：
+  {{
+    "action": "wait",
+    "duration": N
+  }}
 ---
 
 
@@ -2186,27 +2235,19 @@ class QAManager:
         if not src_host:
             return f"❌ 主机 {src_name} 不存在", None
 
-        print(f"[PING] 第一次尝试: {src_name} -> {target_ip}")
-        result1 = src_host.cmd("ping -c 3 -W 1 %s" % target_ip)
-        match1 = re.search(r"(\d+) packets transmitted, (\d+) received", result1)
-        success1 = match1 and int(match1.group(2)) >= 1
-
-        if success1:
-            return "%s 可以✅ ping 通 %s\n%s" % (src_name, target_host or target_ip, result1), None
-
-        print("[PING] 第一次失败，等待 5 秒后重试...")
-        time.sleep(5)
-
-        print(f"[PING] 第二次尝试: {src_name} -> {target_ip}")
-        result2 = src_host.cmd("ping -c 3 -W 1 %s" % target_ip)
-        match2 = re.search(r"(\d+) packets transmitted, (\d+) received", result2)
-        success2 = match2 and int(match2.group(2)) >= 1
+        print(f"[PING] 正在尝试: {src_name} -> {target_ip}")
+        result = src_host.cmd("ping -c 3 -W 1 %s" % target_ip)
+        match = re.search(r"(\d+) packets transmitted, (\d+) received", result)
+        success = match and int(match.group(2)) >= 1
 
         final_result = "%s %s ping 通 %s\n%s" % (
-            src_name, "可以✅" if success2 else "无法❌", target_host or target_ip, result2)
+            src_name, "可以✅" if success else "无法❌", target_host or target_ip, result)
 
-        # ✅ 判断是否要自动修复
-        if (not success2) and expect_result == "success" and auto_fix:
+        if success:
+            return final_result, None
+
+        # 失败 + 预期成功 + 自动修复开关开启 → 触发 QA 修复建议
+        if expect_result == "success" and auto_fix:
             print("[QAAgent] ping 失败，准备提出自动修复建议")
 
             src_ip = get_host_ip(src_name)
@@ -2233,92 +2274,6 @@ class QAManager:
             return final_result + "\n🧠 QAAgent 已提出修复建议", repair_suggestion
 
         return final_result, None
-
-
-    # def ping_test(self, instruction: dict) -> Tuple[str, Optional[dict]]:
-    #     print(f"[DEBUG] global_net状态: {mm.global_net}")
-    #     if not mm.global_net:
-    #         return "❌ 当前没有拓扑 (请先创建拓扑或检查global_net引用)", None
-
-    #     src_name = instruction.get("extra", {}).get("source") or instruction.get("source")
-    #     target_ip = instruction.get("extra", {}).get("target") or instruction.get("target")
-    #     target_host = instruction.get("extra", {}).get("target_host") or instruction.get("target")
-    #     expect_result = instruction.get("extra", {}).get("expect_result", None)
-    #     auto_fix = instruction.get("extra", {}).get("auto_fix", False)
-
-    #     if not src_name or not target_ip:
-    #         return "❌ 指令缺少 source 或 target", None
-
-    #     src_host = mm.global_net.get(src_name)
-    #     if not src_host:
-    #         return f"❌ 主机 {src_name} 不存在", None
-
-    #     print(f"[PING] 第一次尝试: {src_name} -> {target_ip}")
-    #     result1 = src_host.cmd("ping -c 3 -W 1 %s" % target_ip)
-    #     match1 = re.search(r"(\d+) packets transmitted, (\d+) received", result1)
-    #     success1 = match1 and int(match1.group(2)) >= 1
-
-    #     if success1:
-    #         return "%s 可以✅ ping 通 %s\n%s" % (src_name, target_host or target_ip, result1), None
-
-    #     print("[PING] 第一次失败，等待 5 秒后重试...")
-    #     time.sleep(5)
-
-    #     print(f"[PING] 第二次尝试: {src_name} -> {target_ip}")
-    #     result2 = src_host.cmd("ping -c 3 -W 1 %s" % target_ip)
-    #     match2 = re.search(r"(\d+) packets transmitted, (\d+) received", result2)
-    #     success2 = match2 and int(match2.group(2)) >= 1
-
-    #     final_result = "%s %s ping 通 %s\n%s" % (
-    #         src_name, "可以✅" if success2 else "无法❌", target_host or target_ip, result2)
-
-    #     # ✅ 判断是否要自动修复
-    #     if (not success2) and expect_result == "success" and auto_fix:
-    #         print("[QAAgent] ping 失败，触发自动修复链")
-
-    #         src_ip = get_host_ip(src_name)
-    #         switches = get_path_switches(src_name, target_ip)
-    #         match_fields = {
-    #             "dl_type": 2048,
-    #             "nw_src": src_ip,
-    #             "nw_dst": target_ip,
-    #             "nw_proto": 1
-    #         }
-
-    #         # 构造先删除流表的意图
-    #         delete_intent = {
-    #             "action": "delete_flowtable",
-    #             "switches": switches,
-    #             "match": match_fields
-    #         }
-
-    #         # 构造 install_flowtable 意图
-    #         install_intent = {
-    #             "action": "install_flowtable",
-    #             "switches": switches,
-    #             "extra": {
-    #                 "match": match_fields,
-    #                 "actions": "ALLOW",
-    #                 "priority": 100
-    #             },
-    #             "triggered_by": {
-    #                 "agent": "QAAgent",
-    #                 "reason": "%s→%s ping failed, auto_fix triggered" % (src_name, target_ip)
-    #             }
-    #         }
-
-    #         # ✅ 先执行删除（可立即推送）
-    #         print("[QAAgent] 删除原有阻断规则: %s" % delete_intent)
-    #         from backend.coordinator.message_pool import message_pool
-    #         print("[qa_manager.py]成功引入消息池message_pool")
-            
-    #         trace_id = instruction.get("trace_id")  # 🧠 保留上下文链路
-    #         send_intent(delete_intent, sender="QAAgent", trace_id=trace_id)
-            
-    #         # ✅ 然后返回 install_intent 让调用方继续广播
-    #         return final_result + "\n⚙️ 已触发自动修复（删除 + ALLOW）", install_intent
-
-    #     return final_result, None
 
 
     def ping_all(self) -> str:
@@ -3027,7 +2982,7 @@ def robust_ping_pairs_multi_thread(net, max_workers=20, batch_size=50):
                 futures.append(executor.submit(ping_and_store, src, dst, idx))
             for future in futures:
                 future.result()
-        time.sleep(0.5)
+        # time.sleep(0.5)
 
     elapsed = time.time() - start_time
     print(f"[完成] 所有主机对 ping 测试已完成，总耗时：{elapsed:.2f} 秒")

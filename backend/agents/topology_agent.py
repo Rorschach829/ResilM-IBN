@@ -9,19 +9,33 @@ class TopologyAgent:
         message_pool.subscribe("link_up", self.handle_link_up)
         
     def handle_create(self, message: dict):
-        result = self.manager.create_topology(message)
-        message["_result"] = result
-        
-        record_agent_result(message, result, "TopologyAgent")
-
+        success, msg, host_count = self.manager.create_topology(message)
+        message["_result"] = msg
+        record_agent_result(
+            message=message,
+            result=success,
+            agent_name="TopologyAgent",
+            extra_info=msg,
+            value=f"{host_count} hosts"
+        )
 
     def handle_link_down(self, message: dict):
-        result = self.manager.link_down(message)
-        message["_result"] = result
-        record_agent_result(message, result, "TopologyAgent")
+        success, msg = self.manager.link_down(message)
+        message["_result"] = msg
+        record_agent_result(
+            message=message,
+            result=success,
+            agent_name="TopologyAgent",
+            extra_info=msg
+        )
 
     def handle_link_up(self, message: dict):
-        result = self.manager.link_up(message)
-        message["_result"] = result
-        record_agent_result(message, result, "TopologyAgent")
-   
+        success, msg = self.manager.link_up(message)
+        message["_result"] = msg
+        record_agent_result(
+            message=message,
+            result=success,
+            agent_name="TopologyAgent",
+            extra_info=msg
+        )
+
