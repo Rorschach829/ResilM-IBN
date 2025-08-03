@@ -16,10 +16,24 @@ class ExecutorAgent:
         if action == "wait":
             duration = message.get("duration", 5)
             print(f"[ExecutorAgent] ⏱️ 正在等待 {duration} 秒...")
-            time.sleep(duration)
-            message["_result"] = f"✅ 已等待 {duration} 秒"
-            result = message["_result"]
-            record_agent_result(message, result, "ExecutorAgent")
+
+            try:
+                time.sleep(duration)
+                output_msg = f"✅ 已等待 {duration} 秒"
+                result_flag = True
+            except Exception as e:
+                output_msg = f"❌ 等待失败: {e}"
+                result_flag = False
+
+            message["_result"] = output_msg
+
+            record_agent_result(
+                message=message,
+                result=result_flag,
+                agent_name="ExecutorAgent",
+                extra_info=output_msg,
+                value=f"{duration}秒"
+            )
 
         elif action == "print":
             msg = message.get("text", "(空)")

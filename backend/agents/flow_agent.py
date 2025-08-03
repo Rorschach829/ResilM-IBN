@@ -12,7 +12,7 @@ class FlowAgent:
         message_pool.subscribe("limit_bandwidth", self.handle_limit_bw)
         message_pool.subscribe("clear_bandwidth_limit", self.handle_clear_bw)
         message_pool.subscribe("repair_suggestion", self.handle_repair_suggestion)
-
+    
     def handle_install(self, message: dict):
         if "triggered_by" in message:
             print(f"[FlowAgent] 接收到 QAAgent 自动修复意图: {message['triggered_by']}")
@@ -20,29 +20,68 @@ class FlowAgent:
         else:
             message["_source_agent"] = "User"
 
-        result = self.manager.install_rule(message)
-        message["_result"] = result
-        record_agent_result(message, result, "FlowAgent")
+        output_msg, result_flag, count = self.manager.install_rule(message)
+        message["_result"] = output_msg
+
+        record_agent_result(
+            message=message,
+            result=result_flag,
+            agent_name="FlowAgent",
+            extra_info=output_msg,
+            value=f"{count}/{len(message.get('switches', []))} switches OK"
+        )
 
     def handle_delete(self, message: dict):
-        result = self.manager.delete_rule(message)
-        message["_result"] = result
-        record_agent_result(message, result, "FlowAgent")
+        output_msg, result_flag, count = self.manager.delete_rule(message)
+        message["_result"] = output_msg
+
+        record_agent_result(
+            message=message,
+            result=result_flag,
+            agent_name="FlowAgent",
+            extra_info=output_msg,
+            value=f"{count} rules deleted" if count is not None else None
+        )
+
 
     def handle_get(self, message: dict):
-        result = self.manager.query_table(message)
-        message["_result"] = result
-        record_agent_result(message, result, "FlowAgent")
+        output_msg, result_flag, count = self.manager.query_table(message)
+        message["_result"] = output_msg
+
+        record_agent_result(
+            message=message,
+            result=result_flag,
+            agent_name="FlowAgent",
+            extra_info=output_msg,
+            value=f"{count}/{len(message.get('switches', []))} switches OK" if count is not None else None
+        )
+
 
     def handle_limit_bw(self, message: dict):
-        result = self.manager.limit_bandwidth(message)
-        message["_result"] = result
-        record_agent_result(message, result, "FlowAgent")
+        output_msg, result_flag, value_str = self.manager.limit_bandwidth(message)
+        message["_result"] = output_msg
+
+        record_agent_result(
+            message=message,
+            result=result_flag,
+            agent_name="FlowAgent",
+            extra_info=output_msg,
+            value=value_str
+        )
+
 
     def handle_clear_bw(self, message: dict):
-        result = self.manager.clear_bandwidth_limit(message)
-        message["_result"] = result
-        record_agent_result(message, result, "FlowAgent")
+        output_msg, result_flag, value_host = self.manager.clear_bandwidth_limit(message)
+        message["_result"] = output_msg
+
+        record_agent_result(
+            message=message,
+            result=result_flag,
+            agent_name="FlowAgent",
+            extra_info=output_msg,
+            value=value_host  # 可选字段，记录取消限速的主机名
+        )
+
 
     def handle_repair_suggestion(self, message: dict):
         if not message.get("auto_fix", False):
@@ -87,3 +126,12 @@ class FlowAgent:
         send_intent(install_msg, sender="FlowAgent", trace_id=trace_id)
 
         print(f"[FlowAgent] ✅ delete + install 指令已转发至消息池")
+        
+        record_agent_result(
+            message=message,
+            result=True,
+            agent_name="FlowAgent",
+            extra_info="✅ 已根据 QAAgent 建议执行 delete + install 操作",
+            value="repair_suggestion"
+        )
+
