@@ -146,14 +146,40 @@ def rebuild_topology(intent_json: dict) -> str:
         global_net = None
         return f"❌ 拓扑创建失败: {str(e)}"
 
+# def stop_topology() -> str:
+#     global global_net
+#     try:
+#         if global_net:
+#             global_net.stop()
+#             global_net = None
+#         cleanup()  # ✅ 等价于 mn -c
+#         return "✅ 拓扑已停止并清理残留资源"
+#     except Exception as e:
+#         return f"❌ 停止拓扑失败: {str(e)}"
+
 def stop_topology() -> str:
-    global global_net
+    global global_net, CURRENT_LOG_FILE
     try:
         if global_net:
             global_net.stop()
             global_net = None
-        cleanup()  # ✅ 等价于 mn -c
+
+        # ✅ 清理 MininetManager 中的拓扑缓存
+        mm.switches.clear()
+        mm.hosts.clear()
+        mm.graph.clear()
+        mm.topology_name = None
+        mm.valid_hosts.clear()  # 如果有合法主机注册缓存
+
+        # ✅ 清理日志指针
+        CURRENT_LOG_FILE = None
+
+        # ✅ 系统级残留清理
+        os.system("mn -c")
+
+        print("[CLEANUP] ✅ 已清除 Mininet 实例 + 缓存结构 + 系统残留")
         return "✅ 拓扑已停止并清理残留资源"
+
     except Exception as e:
         return f"❌ 停止拓扑失败: {str(e)}"
 

@@ -14,6 +14,10 @@ from backend.utils.messagepool_utils import send_intent
 from backend.agents.json_builder_agent import JSONBuilderAgent
 import uuid
 from backend.coordinator.message_pool import message_pool
+from backend.utils.logger import CURRENT_LOG_FILE
+# from test.temporary import find_entries_by_trace_id
+import threading
+import time
 
 init_logger()
 
@@ -51,6 +55,7 @@ def handle_intent():
     except Exception as e:
         return jsonify({"error": f"指令处理失败: {str(e)}"}), 500
 
+
 # 获取当前拓扑
 @app.route("/topology", methods=["GET"])
 def topology():
@@ -70,6 +75,26 @@ def stop():
 def token_stats():
     return jsonify({"total_tokens": get_total_tokens()})
 
+# 清理拓扑并且清空Current_log_file
+@app.route("/cleanup", methods=["POST"])
+def cleanup_topology():
+    try:
+        stop_topology()
+        return jsonify({"success": True, "message": "✅ 已清空拓扑"}), 200
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@app.route("/shortest_path")
+def shortest_path():
+    src = request.args.get("src")
+    dst = request.args.get("dst")
+
+    try:
+        path = get_path_switches(src, dst)  # 或其他内部方法
+        return jsonify({"path": path, "success": True})
+    except Exception as e:
+        return jsonify({"path": [], "success": False, "error": str(e)}), 400
 
 if __name__ == "__main__":
     init_logger()

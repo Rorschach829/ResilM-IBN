@@ -53,6 +53,10 @@ Meta-IBN/
     ryu_app/
         __init__.py
         auto_generate_path_intents.py
+    test/
+        intent.txt
+        temporary.py
+        test_intent_batch.py
         templates/
             index.html
 
@@ -209,7 +213,7 @@ if __name__ == '__main__':
 
 
 # 文件路径: ./tmp/intent_log_path.txt
-/data/gjw/Meta-IBN/logs/topo_20250801_170338.jsonl
+/data/gjw/Meta-IBN/logs/topo_20250804_152048.jsonl
 
 # 文件路径: ./backend/__init__.py
 
@@ -237,6 +241,8 @@ from backend.utils.messagepool_utils import send_intent
 from backend.agents.json_builder_agent import JSONBuilderAgent
 import uuid
 from backend.coordinator.message_pool import message_pool
+from backend.utils.logger import CURRENT_LOG_FILE
+
 
 init_logger()
 
@@ -293,6 +299,26 @@ def stop():
 def token_stats():
     return jsonify({"total_tokens": get_total_tokens()})
 
+# 清理拓扑并且清空Current_log_file
+@app.route("/cleanup", methods=["POST"])
+def cleanup_topology():
+    try:
+        stop_topology()
+        return jsonify({"success": True, "message": "✅ 已清空拓扑"}), 200
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@app.route("/shortest_path")
+def shortest_path():
+    src = request.args.get("src")
+    dst = request.args.get("dst")
+
+    try:
+        path = get_path_switches(src, dst)  # 或其他内部方法
+        return jsonify({"path": path, "success": True})
+    except Exception as e:
+        return jsonify({"path": [], "success": False, "error": str(e)}), 400
 
 if __name__ == "__main__":
     init_logger()
@@ -532,14 +558,40 @@ def rebuild_topology(intent_json: dict) -> str:
         global_net = None
         return f"❌ 拓扑创建失败: {str(e)}"
 
+# def stop_topology() -> str:
+#     global global_net
+#     try:
+#         if global_net:
+#             global_net.stop()
+#             global_net = None
+#         cleanup()  # ✅ 等价于 mn -c
+#         return "✅ 拓扑已停止并清理残留资源"
+#     except Exception as e:
+#         return f"❌ 停止拓扑失败: {str(e)}"
+
 def stop_topology() -> str:
-    global global_net
+    global global_net, CURRENT_LOG_FILE
     try:
         if global_net:
             global_net.stop()
             global_net = None
-        cleanup()  # ✅ 等价于 mn -c
+
+        # ✅ 清理 MininetManager 中的拓扑缓存
+        mm.switches.clear()
+        mm.hosts.clear()
+        mm.graph.clear()
+        mm.topology_name = None
+        mm.valid_hosts.clear()  # 如果有合法主机注册缓存
+
+        # ✅ 清理日志指针
+        CURRENT_LOG_FILE = None
+
+        # ✅ 系统级残留清理
+        os.system("mn -c")
+
+        print("[CLEANUP] ✅ 已清除 Mininet 实例 + 缓存结构 + 系统残留")
         return "✅ 拓扑已停止并清理残留资源"
+
     except Exception as e:
         return f"❌ 停止拓扑失败: {str(e)}"
 
@@ -1253,10 +1305,24 @@ class ExecutorAgent:
         if action == "wait":
             duration = message.get("duration", 5)
             print(f"[ExecutorAgent] ⏱️ 正在等待 {duration} 秒...")
-            time.sleep(duration)
-            message["_result"] = f"✅ 已等待 {duration} 秒"
-            result = message["_result"]
-            record_agent_result(message, result, "ExecutorAgent")
+
+            try:
+                time.sleep(duration)
+                output_msg = f"✅ 已等待 {duration} 秒"
+                result_flag = True
+            except Exception as e:
+                output_msg = f"❌ 等待失败: {e}"
+                result_flag = False
+
+            message["_result"] = output_msg
+
+            record_agent_result(
+                message=message,
+                result=result_flag,
+                agent_name="ExecutorAgent",
+                extra_info=output_msg,
+                value=f"{duration}秒"
+            )
 
         elif action == "print":
             msg = message.get("text", "(空)")
@@ -1285,7 +1351,7 @@ class FlowAgent:
         message_pool.subscribe("limit_bandwidth", self.handle_limit_bw)
         message_pool.subscribe("clear_bandwidth_limit", self.handle_clear_bw)
         message_pool.subscribe("repair_suggestion", self.handle_repair_suggestion)
-
+    
     def handle_install(self, message: dict):
         if "triggered_by" in message:
             print(f"[FlowAgent] 接收到 QAAgent 自动修复意图: {message['triggered_by']}")
@@ -1293,29 +1359,68 @@ class FlowAgent:
         else:
             message["_source_agent"] = "User"
 
-        result = self.manager.install_rule(message)
-        message["_result"] = result
-        record_agent_result(message, result, "FlowAgent")
+        output_msg, result_flag, count = self.manager.install_rule(message)
+        message["_result"] = output_msg
+
+        record_agent_result(
+            message=message,
+            result=result_flag,
+            agent_name="FlowAgent",
+            extra_info=output_msg,
+            value=f"{count}/{len(message.get('switches', []))} switches OK"
+        )
 
     def handle_delete(self, message: dict):
-        result = self.manager.delete_rule(message)
-        message["_result"] = result
-        record_agent_result(message, result, "FlowAgent")
+        output_msg, result_flag, count = self.manager.delete_rule(message)
+        message["_result"] = output_msg
+
+        record_agent_result(
+            message=message,
+            result=result_flag,
+            agent_name="FlowAgent",
+            extra_info=output_msg,
+            value=f"{count} rules deleted" if count is not None else None
+        )
+
 
     def handle_get(self, message: dict):
-        result = self.manager.query_table(message)
-        message["_result"] = result
-        record_agent_result(message, result, "FlowAgent")
+        output_msg, result_flag, count = self.manager.query_table(message)
+        message["_result"] = output_msg
+
+        record_agent_result(
+            message=message,
+            result=result_flag,
+            agent_name="FlowAgent",
+            extra_info=output_msg,
+            value=f"{count}/{len(message.get('switches', []))} switches OK" if count is not None else None
+        )
+
 
     def handle_limit_bw(self, message: dict):
-        result = self.manager.limit_bandwidth(message)
-        message["_result"] = result
-        record_agent_result(message, result, "FlowAgent")
+        output_msg, result_flag, value_str = self.manager.limit_bandwidth(message)
+        message["_result"] = output_msg
+
+        record_agent_result(
+            message=message,
+            result=result_flag,
+            agent_name="FlowAgent",
+            extra_info=output_msg,
+            value=value_str
+        )
+
 
     def handle_clear_bw(self, message: dict):
-        result = self.manager.clear_bandwidth_limit(message)
-        message["_result"] = result
-        record_agent_result(message, result, "FlowAgent")
+        output_msg, result_flag, value_host = self.manager.clear_bandwidth_limit(message)
+        message["_result"] = output_msg
+
+        record_agent_result(
+            message=message,
+            result=result_flag,
+            agent_name="FlowAgent",
+            extra_info=output_msg,
+            value=value_host  # 可选字段，记录取消限速的主机名
+        )
+
 
     def handle_repair_suggestion(self, message: dict):
         if not message.get("auto_fix", False):
@@ -1360,6 +1465,15 @@ class FlowAgent:
         send_intent(install_msg, sender="FlowAgent", trace_id=trace_id)
 
         print(f"[FlowAgent] ✅ delete + install 指令已转发至消息池")
+        
+        record_agent_result(
+            message=message,
+            result=True,
+            agent_name="FlowAgent",
+            extra_info="✅ 已根据 QAAgent 建议执行 delete + install 操作",
+            value="repair_suggestion"
+        )
+
 
 
 # 文件路径: ./backend/agents/intent_agent.py
@@ -1460,21 +1574,6 @@ class IntentAgent:
         for instr in instructions:
             send_intent(instr, sender="IntentAgent", trace_id=trace_id)  # ✅ 统一传入 trace_id
 
-    # def send_instruction(self, intent_text: str):
-    #     """
-    #     核心入口：解析自然语言意图，转换为结构化指令，并统一发送到 message_pool
-    #     """
-    #     try:
-    #         instructions = self.intent_to_instruction(intent_text)
-    #     except Exception as e:
-    #         print(f"[IntentAgent] ❌ 指令解析失败: {e}")
-    #         return
-
-    #     trace_id = str(uuid.uuid4())
-    #     print(f"[IntentAgent] ✅ 拆解为 {len(instructions)} 条指令，trace_id={trace_id}")
-
-    #     for instr in instructions:
-    #         send_intent(instr, sender="IntentAgent", trace_id=trace_id)
 
 
 # 文件路径: ./backend/agents/json_builder_agent.py
@@ -1559,11 +1658,24 @@ class JSONBuilderAgent:
             print("[JSONBuilderAgent] ❌ 返回结果不是 JSON 数组")
             return
 
-        for instr in json_array:
-            instr["trace_id"] = trace_id  # ✅ 强制覆写 trace_id
-            instr["intent_text"] = intent_text  # 可选：补全 intent_text
+        # for instr in json_array:
+        #     instr["trace_id"] = trace_id  # ✅ 强制覆写 trace_id
+        #     instr["intent_text"] = intent_text  # 可选：补全 intent_text
+        #     print(f"[JSONBuilderAgent] 📤 发送指令: {instr.get('action')} trace_id={trace_id}")
+        #     send_intent(instr, sender="JSONBuilderAgent", trace_id=trace_id)
+        for i, instr in enumerate(json_array):
+            instr["trace_id"] = trace_id
+            instr["intent_text"] = intent_text
+
+            if i == len(json_array) - 1:
+                instr["final_step"] = True  # ✅ 给最后一条指令标记
+
             print(f"[JSONBuilderAgent] 📤 发送指令: {instr.get('action')} trace_id={trace_id}")
             send_intent(instr, sender="JSONBuilderAgent", trace_id=trace_id)
+
+
+
+
 
     def generate_json_instructions(self, plan_instr: dict) -> list:
         from backend.llm.prompt_templates import load_json_builder_prompt
@@ -1623,25 +1735,54 @@ class QAAgent:
         message_pool.subscribe("verify_bandwidth", self.handle_verify_bw)
 
     def handle_ping_test(self, message: dict):
-        output, repair_intent = self.manager.ping_test(message)
-        message["_result"] = output
+        output_msg, repair_intent, success = self.manager.ping_test(message)
+        message["_result"] = output_msg  # 保留控制台提示
+
         if repair_intent:
             print("[QAAgent] 发布自动修复流表: %s" % repair_intent)
-            trace_id = message.get("trace_id")  # ⬅️ 拿到原始 ping_test 指令的 trace_id
+            trace_id = message.get("trace_id")
             repair_intent["triggered_by"] = message.get("sender", "Unknown")
             send_intent(repair_intent, sender="QAAgent", trace_id=trace_id)
 
-        record_agent_result(message, output, "QAAgent")
+        record_agent_result(
+            message=message,
+            result=success,
+            agent_name="QAAgent",
+            extra_info=output_msg,
+            value="ping success" if success else "ping failed"
+        )
+
 
     def handle_ping_all(self, message: dict):
-        result = self.manager.ping_all()
-        message["_result"] = result
-        record_agent_result(message, result, "QAAgent")
+        msg, is_result_ok, value = self.manager.ping_all(message)
+        message["_result"] = msg
+
+        record_agent_result(
+            message=message,
+            result=is_result_ok,  # ✅ 只要验证结果和预期一致，就算成功
+            agent_name="QAAgent",
+            extra_info=msg,
+            value=f"{value} failed pairs" if not is_result_ok else f"{value} pairs verified"
+        )
+
 
     def handle_verify_bw(self, message: dict):
         result = self.manager.verify_bandwidth(message)
         message["_result"] = result
         record_agent_result(message, result, "QAAgent")
+
+    def handle_verify_bw(self, message: dict):
+        output_msg, success, bandwidth = self.manager.verify_bandwidth(message)
+        message["_result"] = output_msg
+
+        record_agent_result(
+            message=message,
+            result=success,
+            agent_name="QAAgent",
+            extra_info=output_msg,
+            value=bandwidth  # e.g. "38.9 Gbits/sec"
+        )
+
 
 
 
@@ -1657,22 +1798,36 @@ class TopologyAgent:
         message_pool.subscribe("link_up", self.handle_link_up)
         
     def handle_create(self, message: dict):
-        result = self.manager.create_topology(message)
-        message["_result"] = result
-        
-        record_agent_result(message, result, "TopologyAgent")
-
+        success, msg, host_count = self.manager.create_topology(message)
+        message["_result"] = msg
+        record_agent_result(
+            message=message,
+            result=success,
+            agent_name="TopologyAgent",
+            extra_info=msg,
+            value=f"{host_count} hosts"
+        )
 
     def handle_link_down(self, message: dict):
-        result = self.manager.link_down(message)
-        message["_result"] = result
-        record_agent_result(message, result, "TopologyAgent")
+        success, msg = self.manager.link_down(message)
+        message["_result"] = msg
+        record_agent_result(
+            message=message,
+            result=success,
+            agent_name="TopologyAgent",
+            extra_info=msg
+        )
 
     def handle_link_up(self, message: dict):
-        result = self.manager.link_up(message)
-        message["_result"] = result
-        record_agent_result(message, result, "TopologyAgent")
-   
+        success, msg = self.manager.link_up(message)
+        message["_result"] = msg
+        record_agent_result(
+            message=message,
+            result=success,
+            agent_name="TopologyAgent",
+            extra_info=msg
+        )
+
 
 
 # 文件路径: ./backend/agents/prompts/intent_agent.txt
@@ -1985,17 +2140,18 @@ from backend.utils.utils import convert_switch_name_to_dpid
 from backend.utils.ryu_utils import get_all_switch_ids
 from backend.net_simulation.ryu_controller import send_flow_mod
 from backend.utils.topology_utils import get_output_port, auto_fix_switches_by_intent,fix_switches_for_get_flowtable
+from typing import Tuple, Optional, Dict,Any
 
 
 class FlowTableManager:
 
-    def install_rule(self, instruction: dict) -> str:
-        # 自动修复 switches
+    def install_rule(self, instruction: dict) -> Tuple[str, bool, Optional[int]]:
         if not instruction.get("switches") or instruction["switches"] == ["s1"]:
             auto_fix_switches_by_intent(instruction)
 
         switches = instruction.get("switches")
         results = []
+        success_count = 0
 
         match = instruction.get("match") or instruction.get("extra", {}).get("match", {})
         action_flag = instruction.get("actions") or instruction.get("extra", {}).get("actions", "DENY")
@@ -2012,7 +2168,7 @@ class FlowTableManager:
                 "dpid": dpid,
                 "match": match,
                 "priority": priority,
-                "actions": []  # 默认阻断
+                "actions": []
             }
 
             print(f"[flowtable_manager] action_flag为 {action_flag}")
@@ -2034,40 +2190,50 @@ class FlowTableManager:
             if send_flow_mod(flow_rule):
                 behavior = "转发" if flow_rule["actions"] else "阻断"
                 results.append(f"✅ 成功下发到 {sw} ({behavior} {flow_rule['match']})")
+                success_count += 1
             else:
                 results.append(f"❌ 下发失败到 {sw}")
 
-        return "\n".join(results)
+        all_ok = (success_count == len(switches))
+        return "\n".join(results), all_ok, success_count
 
+    from typing import Tuple, Optional, Dict, Any  # 确保导入这些类型
 
-    
-    def delete_rule(self, instruction: dict) -> str:
+    def delete_rule(self, instruction: dict) -> Tuple[str, bool, Optional[int]]:
         results = []
+        success_count = 0
 
-        # 自动补全交换机（可选）
         auto_fix_switches_by_intent(instruction)
         switches = instruction.get("switches", [])
         match = instruction.get("match", {}) or instruction.get("extra", {}).get("match", {})
 
         if not switches:
-            return "❌ 参数错误：未提供交换机列表"
+            return "❌ 参数错误：未提供交换机列表", False, None
 
-        if not match:  # 🆕 如果没有提供 match，就清空所有流表
+        # ✅ 情况1：清空所有流表（无 match）
+        if not match:
             for sw in switches:
-                results.append(self._delete_all_flows(sw))
-            return "\n".join(results)
+                msg, ok = self._delete_all_flows(sw)
+                results.append(msg)
+                if ok:
+                    success_count += 1
+            all_ok = (success_count == len(switches))
+            return "\n".join(results), all_ok, success_count
 
-        # 若提供 match，则继续执行原有删除逻辑
+        # ✅ 情况2：删除特定 match（正反两个方向）
         src_ip = match.get("nw_src")
         dst_ip = match.get("nw_dst")
         proto = match.get("nw_proto")
         dl_type = match.get("dl_type")
 
-        # ✅ 删除原方向规则
+        # 删除原方向
         for sw in switches:
-            results.append(self._delete_on_switches(sw, match))
+            msg, ok = self._delete_on_switches(sw, match)
+            results.append(msg)
+            if ok:
+                success_count += 1
 
-        # ✅ 自动构造反向规则
+        # 删除反方向
         if src_ip and dst_ip:
             reverse_match = {
                 "nw_src": dst_ip,
@@ -2076,16 +2242,24 @@ class FlowTableManager:
                 "dl_type": dl_type
             }
             for sw in switches:
-                results.append(self._delete_on_switches(sw, reverse_match))
+                msg, ok = self._delete_on_switches(sw, reverse_match)
+                results.append(msg)
+                if ok:
+                    success_count += 1
 
-        return "\n".join(results)
+        total_attempts = len(switches) * (2 if src_ip and dst_ip else 1)
+        all_ok = (success_count == total_attempts)
+
+        return "\n".join(results), all_ok, success_count
+
+
 
     # 删除某交换机上所有流表
-    def _delete_all_flows(self, sw: str) -> str:
+    def _delete_all_flows(self, sw: str) -> Tuple[str, bool]:
         try:
             dpid = convert_switch_name_to_dpid(sw)
         except ValueError as e:
-            return f"❌ 无法识别交换机 {sw}: {e}"
+            return f"❌ 无法识别交换机 {sw}: {e}", False
 
         payload = {
             "dpid": dpid,
@@ -2093,72 +2267,72 @@ class FlowTableManager:
         }
 
         try:
-            resp = requests.post("http://localhost:8081/stats/flowentry/delete", json=payload)
             print(f"[delete_rule] 正在清空 {sw} 上所有流表")
+            resp = requests.post("http://localhost:8081/stats/flowentry/delete", json=payload)
             if resp.status_code != 200:
-                return f"❌ 删除失败，交换机 {sw} 返回码 {resp.status_code}"
+                return f"❌ 删除失败，交换机 {sw} 返回码 {resp.status_code}", False
         except Exception as e:
-            return f"❌ 删除失败: {e}"
+            return f"❌ 删除失败: {e}", False
 
-        return f"✅ 清空 {sw} 上所有流表成功"
+        return f"✅ 清空 {sw} 上所有流表成功", True
+
 
 
     # 精确删除某条规则
-    def _delete_on_switches(self, sw: str, match: Dict[str, Any]):
+    def _delete_on_switches(self, sw: str, match: Dict[str, Any]) -> Tuple[str, bool]:
         try:
             dpid = convert_switch_name_to_dpid(sw)
         except ValueError as e:
-            return f"❌ 无法识别交换机 {sw}: {e}"
+            return f"❌ 无法识别交换机 {sw}: {e}", False
 
         payload = {"dpid": dpid, "match": match}
         try:
-            resp = requests.post("http://localhost:8081/stats/flowentry/delete", json=payload)
             print(f"[delete_rule] 正在删除 {sw} 上匹配 {match}")
-
+            resp = requests.post("http://localhost:8081/stats/flowentry/delete", json=payload)
             if resp.status_code != 200:
-                return f"❌ 删除失败，交换机 {sw} 返回码 {resp.status_code}"
+                return f"❌ 删除失败，交换机 {sw} 返回码 {resp.status_code}", False
         except Exception as e:
-            return f"❌ 删除失败: {e}"
+            return f"❌ 删除失败: {e}", False
 
-        return f"✅ 删除匹配规则: {match}"
+        return f"✅ 删除匹配规则: {match}", True
 
-
-    def query_table(self, instruction: dict) -> str:
-
+    def query_table(self, instruction: dict) -> Tuple[str, bool, Optional[int]]:
         if not instruction.get("switches") or instruction["switches"] == ["s1"]:
             fix_switches_for_get_flowtable(instruction)
 
         switches = instruction.get("switches", [])
         results = []
+        success_count = 0
 
         for sw in switches:
-            dpid = convert_switch_name_to_dpid(sw)
-            url = f"http://localhost:8081/stats/flow/{dpid}"
-
             try:
+                dpid = convert_switch_name_to_dpid(sw)
+                url = f"http://localhost:8081/stats/flow/{dpid}"
                 resp = requests.get(url)
                 if resp.status_code == 200:
                     flows = resp.json().get(str(dpid), [])
                     formatted = json.dumps(flows, indent=2, ensure_ascii=False)
                     results.append(f"✅ {sw} 流表:\n{formatted}")
+                    success_count += 1
                 else:
-                    results.append(f"❌ 获取 {sw} 流表失败")
+                    results.append(f"❌ 获取 {sw} 流表失败（状态码 {resp.status_code}）")
             except Exception as e:
                 results.append(f"❌ 请求失败: {e}")
 
-        return "\n\n".join(results)
+        all_ok = (success_count == len(switches))
+        return "\n\n".join(results), all_ok, success_count
 
-    def limit_bandwidth(self, instruction: dict) -> str:
+    def limit_bandwidth(self, instruction: dict) -> Tuple[str, bool, Optional[str]]:
         src = instruction.get("src_host")
         dst = instruction.get("dst_host")
         rate = instruction.get("rate_mbps")
 
         if not mm.global_net:
-            return "❌ 当前没有拓扑"
+            return "❌ 当前没有拓扑", False, None
 
         src_host = mm.global_net.get(src)
         if not src_host:
-            return f"❌ 找不到主机 {src}"
+            return f"❌ 找不到主机 {src}", False, None
 
         try:
             dev = f"{src}-eth0"
@@ -2168,7 +2342,7 @@ class FlowTableManager:
             if dst:
                 dst_host = mm.global_net.get(dst)
                 if not dst_host:
-                    return f"❌ 找不到目标主机 {dst}"
+                    return f"❌ 找不到目标主机 {dst}", False, None
                 dst_ip = dst_host.IP()
 
                 cmds += [
@@ -2185,25 +2359,32 @@ class FlowTableManager:
 
             for c in cmds:
                 src_host.cmd(c)
-            return result
-        except Exception as e:
-            return f"❌ 限速失败: {e}"
 
-    def clear_bandwidth_limit(self, instruction: dict) -> str:
+            return result, True, f"{rate} Mbps"
+
+        except Exception as e:
+            return f"❌ 限速失败: {e}", False, None
+
+    def clear_bandwidth_limit(self, instruction: dict) -> Tuple[str, bool, Optional[str]]:
         host = instruction.get("host")
         if not mm.global_net:
-            return "❌ 当前没有拓扑"
+            return "❌ 当前没有拓扑", False, None
+
         target = mm.global_net.get(host)
         if not target:
-            return f"❌ 主机 {host} 不存在"
+            return f"❌ 主机 {host} 不存在", False, None
 
         try:
             dev = f"{host}-eth0"
             cmd = f"tc qdisc del dev {dev} root"
             result = target.cmd(cmd)
-            return f"✅ 已取消限速：{host}\n执行结果:\n{result}"
+
+            msg = f"✅ 已取消限速：{host}\n执行结果:\n{result}"
+            return msg, True, host
         except Exception as e:
-            return f"❌ 取消限速失败: {e}"
+            return f"❌ 取消限速失败: {e}", False, None
+
+
 
 
 # 文件路径: ./backend/agent_core/qa_manager.py
@@ -2217,10 +2398,10 @@ from typing import Optional, Tuple
 from backend.utils.messagepool_utils import send_intent
 class QAManager:
 
-    def ping_test(self, instruction: dict) -> Tuple[str, Optional[dict]]:
+    def ping_test(self, instruction: dict) -> Tuple[str, Optional[dict], bool]:
         print(f"[DEBUG] global_net状态: {mm.global_net}")
         if not mm.global_net:
-            return "❌ 当前没有拓扑 (请先创建拓扑或检查 global_net 引用)", None
+            return "❌ 当前没有拓扑 (请先创建拓扑或检查 global_net 引用)", None, False
 
         src_name = instruction.get("extra", {}).get("source") or instruction.get("source")
         target_ip = instruction.get("extra", {}).get("target") or instruction.get("target")
@@ -2229,11 +2410,11 @@ class QAManager:
         auto_fix = instruction.get("extra", {}).get("auto_fix", False)
 
         if not src_name or not target_ip:
-            return "❌ 指令缺少 source 或 target", None
+            return "❌ 指令缺少 source 或 target", None, False
 
         src_host = mm.global_net.get(src_name)
         if not src_host:
-            return f"❌ 主机 {src_name} 不存在", None
+            return f"❌ 主机 {src_name} 不存在", None, False
 
         print(f"[PING] 正在尝试: {src_name} -> {target_ip}")
         result = src_host.cmd("ping -c 3 -W 1 %s" % target_ip)
@@ -2243,10 +2424,11 @@ class QAManager:
         final_result = "%s %s ping 通 %s\n%s" % (
             src_name, "可以✅" if success else "无法❌", target_host or target_ip, result)
 
+        # ✅ ping 成功：照旧返回 True，无需修改
         if success:
-            return final_result, None
+            return final_result, None, True
 
-        # 失败 + 预期成功 + 自动修复开关开启 → 触发 QA 修复建议
+        # ✅ ping 失败 + 自动修复触发逻辑不变
         if expect_result == "success" and auto_fix:
             print("[QAAgent] ping 失败，准备提出自动修复建议")
 
@@ -2271,60 +2453,80 @@ class QAManager:
                 "reason": "QAAgent 检测 ping 失败，建议修复通信路径"
             }
 
-            return final_result + "\n🧠 QAAgent 已提出修复建议", repair_suggestion
+            return final_result + "\n🧠 QAAgent 已提出修复建议", repair_suggestion, True  # ✅ 此处也改为 True
 
-        return final_result, None
+        # ✅ ping 失败但无异常，也认为执行成功（你现在想要的）
+        return final_result, None, True
 
 
-    def ping_all(self) -> str:
+    
+    def ping_all(self, instruction: dict) -> Tuple[str, bool, Optional[int]]:
         if not mm.global_net:
-            return "❌ 当前没有拓扑"
-        net = mm.global_net
+            return "❌ 当前没有拓扑", False, None
+
         try:
-            print("=== 多线程双向ping_all测试===")
             from backend.utils.topology_utils import robust_ping_pairs_multi_thread
 
-            res = robust_ping_pairs_multi_thread(mm.global_net)
+            print("=== 多线程双向 ping_all 测试 ===")
+            net = mm.global_net
+            res = robust_ping_pairs_multi_thread(net)
 
             failed_pairs = res["failed_pairs"]
             total = res["total"]
             success = res["success"]
 
-            if not failed_pairs:
-                return f"✅ 所有主机均可互相通信，共测试 {total} 对"
+            # ✅ 提取预期结果：希望通信成功（默认） or 失败（阻断）
+            expect_result = instruction.get("extra", {}).get("expect_result", "success")
+            expect_success = (expect_result == "success")
+            actual_success = len(failed_pairs) == 0
+
+            # ✅ 核心逻辑：实际结果 == 预期结果 → 判定为“成功的验证”
+            is_result_ok = (actual_success == expect_success)
+
+            # ✅ 构造日志信息
+            if actual_success:
+                msg = f"✅ 所有主机均可互相通信，共测试 {total} 对"
+                return msg, is_result_ok, total
             else:
                 failed_lines = [f"- {src} → {dst}" for src, dst in failed_pairs]
                 summary = f"✅ 其余 {success} 对主机通信正常"
-                return "❌ 以下主机对无法通信：\n" + "\n".join(failed_lines) + "\n" + summary
-      
-        except Exception as e:
-            return f"❌ 执行ping_all失败: {e}"
+                msg = "❌ 以下主机对无法通信（共 %d 对）：" % len(failed_pairs) + "\n" + "\n".join(failed_lines) + "\n" + summary
+                return msg, is_result_ok, len(failed_pairs)
 
-    def verify_bandwidth(self, instruction: dict) -> str:
+        except Exception as e:
+            return f"❌ 执行 ping_all 失败: {e}", False, None
+
+    def verify_bandwidth(self, instruction: dict) -> Tuple[str, bool, Optional[str]]:
         src = instruction.get("src_host")
         dst = instruction.get("dst_host")
 
         if not mm.global_net:
-            return "❌ 当前没有拓扑"
+            return "❌ 当前没有拓扑", False, None
 
         src_host = mm.global_net.get(src)
         dst_host = mm.global_net.get(dst)
 
         if not src_host or not dst_host:
-            return f"❌ 找不到主机 {src} 或 {dst}"
+            return f"❌ 找不到主机 {src} 或 {dst}", False, None
 
         try:
-            # 启动目标主机 iperf 服务器, TCP模式
-            dst_host.cmd("iperf -s  -D")
+            # 启动目标主机 iperf 服务
+            dst_host.cmd("iperf -s -D")
             time.sleep(1)
 
-            # 源主机发起 iperf 的TCP测试
+            # 源主机发起 TCP 测试
             result = src_host.cmd(f"iperf -c {dst_host.IP()} -t 5")
-            # return f"📊 带宽测试结果 (h1 → h2):\n{result}"
-            return f"📊 带宽测试结果 ({src} → {dst}):\n{result}"
+            full_msg = f"📊 带宽测试结果 ({src} → {dst}):\n{result}"
+
+            # 提取带宽结果（例："[  3]  0.0- 5.0 sec  22.6 GBytes  38.9 Gbits/sec"）
+            match = re.search(r"(\d+\.\d+)\s+Gbits/sec", result)
+            bw = match.group(0) if match else None
+
+            return full_msg, True, bw
 
         except Exception as e:
-            return f"❌ 带宽测试失败: {e}"
+            return f"❌ 带宽测试失败: {e}", False, None
+
 
     def _get_host_by_ip(self, ip: str) -> str:
         """根据 IP 查找主机名"""
@@ -2353,39 +2555,41 @@ SKIP_ACTIONS_ON_RECOVERY = {
     "ping_test",
     "get_flowtable",
     "verify_bandwidth",
-    "ping_all"
+    "ping_all",
+    "wait"
 }
 class TopologyManager:
 
-    def create_topology(self, instruction: dict) -> str:
-
+    def create_topology(self, instruction: dict) -> tuple[bool, str, int]:
         result = mm.rebuild_topology(instruction)
-        # 在执行创建拓扑的时候创建新的日志文件
+
+        # 新日志文件（trace_id 也在这里重新生成）
         start_new_intent_log()
-        
-        if mm.global_net:
-            net = mm.global_net
-            expected_hosts = len(net.hosts)
-            if self._wait_for_all_hosts(expected=expected_hosts):
-                build_and_send_all_path_intents(net)
-                print("[INTENT] 路径流表下发完成 ✅")
-            else:
-                print(f"[INTENT] ❌ 等待超时，期望注册 {expected_hosts} 台主机，实际不足")
 
-        return result
+        if not mm.global_net:
+            return False, "❌ 拓扑创建失败，global_net 为空", 0
 
+        net = mm.global_net
+        expected_hosts = len(net.hosts)
+
+        if self._wait_for_all_hosts(expected=expected_hosts):
+            build_and_send_all_path_intents(net)
+            msg = f"✅ 拓扑创建成功，包含 {expected_hosts} 台主机，路径流表已下发"
+            return True, msg, expected_hosts
+        else:
+            msg = f"❌ 拓扑创建失败，仅注册到 {len(mm.valid_hosts)} 台主机，期望为 {expected_hosts}"
+            return False, msg, len(mm.valid_hosts)
 
     def shutdown_topology(self) -> str:
         return mm.stop_topology()
 
-    def link_down(self, instruction: dict) -> str:
-        print("[DEBUG] Flask 正准备调用 Ryu 的 /intent/link_down 接口")
-        # ✅ 在 link_down 前注入 global_net 给 Ryu 控制器
+    def link_down(self, instruction: dict) -> tuple[bool, str]:
         from backend.controller import controller_instance
         ryu_controller = controller_instance.get_controller_instance()
         if ryu_controller:
             ryu_controller.mininet_net = net_bridge.global_net
             print("[DEBUG] 已注入 global_net 到 Ryu 控制器:", id(net_bridge.global_net))
+
         try:
             resp = requests.post(
                 "http://localhost:8081/intent/link_down",
@@ -2394,20 +2598,22 @@ class TopologyManager:
             )
             print("[DEBUG] Ryu link_down 接口返回状态:", resp.status_code)
             if resp.status_code == 200:
-                return resp.text
+                return True, f"✅ 链路断开成功：{resp.text.strip()}"
             else:
-                return f"❌ 控制器返回错误: {resp.status_code} - {resp.text}"
+                return False, f"❌ 控制器错误 {resp.status_code}: {resp.text.strip()}"
         except Exception as e:
-            return f"❌ 无法连接控制器 REST 接口: {e}"
+            return False, f"❌ 无法连接控制器 REST 接口: {e}"
 
-    def link_up(self, instruction: dict) -> str:
+
+    def link_up(self, instruction: dict) -> tuple[bool, str]:
         log_path = get_latest_log_file()
         if not log_path or not os.path.exists(log_path):
-            return "❌ 当前 session 没有找到日志文件，无法执行 link_up"
+            return False, "❌ 当前 session 没有找到日志文件，无法执行 link_up"
 
         try:
             target_link = instruction.get("link", [])
             link_variants = [target_link, target_link[::-1]]
+
             with open(log_path, "r", encoding="utf-8") as f:
                 blocks = f.read().split("\n\n")
                 instructions = []
@@ -2425,15 +2631,17 @@ class TopologyManager:
                     instructions.append(instr)
 
             mm.stop_topology()
-
             results = []
             for idx, instr in enumerate(instructions):
                 result = execute_instruction(instr)
                 results.append(f"[REPLAY 回放动作 {idx+1}] [{instr.get('action')}] => {result}")
-            return "✅ link_up 完成，已恢复拓扑并保留其他断链操作\n" + "\n".join(results)
+
+            msg = "✅ link_up 完成，已恢复拓扑并保留其他断链操作\n" + "\n".join(results)
+            return True, msg
 
         except Exception as e:
-            return f"❌ link_up 执行失败: {e}"
+            return False, f"❌ link_up 执行失败: {e}"
+
 
     def _wait_for_all_hosts(self, expected=9, timeout=10):
         for _ in range(timeout):
@@ -2676,22 +2884,22 @@ def validate_arp_connectivity(hosts_info: dict, expected_peers: list = None) -> 
 
 
 # 文件路径: ./backend/utils/logger.py
-# backend/utils/logger.py
-
 import os
 import json
 from datetime import datetime
 import glob
 
 BASE_LOG_DIR = "/data/gjw/Meta-IBN/logs"
-CURRENT_LOG_FILE = None  # 🆕 当前正在记录的文件路径（每次创建拓扑会更新它）
+CURRENT_LOG_FILE = None  # 当前日志文件
+TMP_DIR = "/data/gjw/Meta-IBN/tmp"
+TMP_LOG_PATH_FILE = os.path.join(TMP_DIR, "intent_log_path.txt")
 
-# 初始化
+
 def init_logger():
     global CURRENT_LOG_FILE
     CURRENT_LOG_FILE = None
 
-# backend/utils/logger.py
+
 def start_new_intent_log():
     global CURRENT_LOG_FILE
     now = datetime.now()
@@ -2701,74 +2909,89 @@ def start_new_intent_log():
     os.makedirs(BASE_LOG_DIR, exist_ok=True)
     CURRENT_LOG_FILE = full_path
 
-   # ✅ 补充创建 tmp 目录
-    tmp_dir = "/data/gjw/Meta-IBN/tmp"
-    os.makedirs(tmp_dir, exist_ok=True)
-
-    # ✅ 写入临时文件，供后续 link_up 用
-    with open(os.path.join(tmp_dir, "intent_log_path.txt"), "w") as f:
+    os.makedirs(TMP_DIR, exist_ok=True)
+    with open(TMP_LOG_PATH_FILE, "w") as f:
         f.write(CURRENT_LOG_FILE)
 
     clean_old_logs(max_keep=2)
     return CURRENT_LOG_FILE
+
 
 def get_latest_log_file():
     global CURRENT_LOG_FILE
     if CURRENT_LOG_FILE:
         return CURRENT_LOG_FILE
     try:
-        with open("/tmp/intent_log_path.txt", "r") as f:
+        with open(TMP_LOG_PATH_FILE, "r") as f:
             CURRENT_LOG_FILE = f.read().strip()
             return CURRENT_LOG_FILE
     except Exception:
         return None
 
 
+# ✅ 原始log_intent，保留兼容性，但写入结构化字段
 def log_intent(intent_text: str, instruction: dict, result: str):
     global CURRENT_LOG_FILE
     if not CURRENT_LOG_FILE:
-        # fallback（首次使用未初始化）
         start_new_intent_log()
 
     log_entry = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "intent": intent_text,
         "instruction": instruction,
-        "result": result
+        "result": result  # 兼容原格式：可以是字符串，也可以是布尔值
     }
 
     with open(CURRENT_LOG_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(log_entry, ensure_ascii=False, indent=2) + "\n\n")
 
-# 清理旧的日志文件，只保留最近3个
+
+# ✅ 更推荐的结构化日志记录方式
+def record_agent_result(message: dict, result: bool, agent_name: str, extra_info: str = "", value=None, threshold=None):
+    intent_text = message.get("intent_text", "(未提供原始意图)")
+    trace_id = message.get("trace_id", "")
+    action = message.get("action", "unknown_action")
+
+    record = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "trace_id": trace_id,
+        "sender": agent_name,
+        "action": action,
+        "intent": intent_text,
+        "instruction": message,
+        "result": result,
+        "message": extra_info or ("✅ 执行成功" if result else "❌ 执行失败")
+    }
+
+    if message.get("final_step"):
+        record["final_step"] = True
+
+    if value:
+        record["value"] = value
+    if threshold:
+        record["threshold"] = threshold
+
+    global CURRENT_LOG_FILE
+    if not CURRENT_LOG_FILE:
+        start_new_intent_log()
+
+    with open(CURRENT_LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False, indent=2) + "\n\n")
+
+
 def clean_old_logs(max_keep: int = 2):
     log_files = sorted(
         glob.glob(os.path.join(BASE_LOG_DIR, "topo_*.jsonl")),
         key=os.path.getmtime,
         reverse=True
     )
-
-    to_delete = log_files[max_keep:]  # 超出保留数量的文件
+    to_delete = log_files[max_keep:]
     for f in to_delete:
         try:
             os.remove(f)
             print(f"[LOG CLEAN] 已删除旧日志文件: {f}")
         except Exception as e:
             print(f"[LOG CLEAN] 删除失败: {f}, 错误: {e}")
-
-# 将结果记录到json文件当中
-def record_agent_result(message: dict, result: str, agent_name: str, extra_info: str = ""):
-    intent_text = message.get("intent_text", "(未提供原始意图)")
-    record = {
-        "trace_id": message.get("trace_id"),
-        "sender": agent_name,
-        "action": message.get("action"),
-        "result": result
-    }
-    if extra_info:
-        record["info"] = extra_info
-
-    log_intent(intent_text, message, result)
 
 
 # 文件路径: ./backend/utils/messagepool_utils.py
@@ -3313,6 +3536,264 @@ def build_and_send_all_path_intents(net):
                 print(f"❌ 请求异常: {src_name} → {dst_name}, 错误: {e}")
 
     print(f"[INTENT] 流表下发完成: 成功 {success_count} 对，失败 {fail_count} 对")
+
+
+# 文件路径: ./test/intent.txt
+创建一个包含 h1 和 h2 的网络拓扑
+创建一个包含 h1 和 h2 的网络拓扑，测试 h1 是否可以 ping 通 h2
+创建一个包含 h1 和 h2 的网络拓扑，删除交换机 s1 的所有流表项
+创建一个包含 s1 与 s2 的网络拓扑，将 s1 与 s2 之间的链路断开
+创建一个包含 h1、h2、h3、h4 的网络拓扑，测试 h1 是否可以 ping 通 h4
+创建一个包含 h1 和 h2 的网络拓扑，阻断h1和h2的通信，测试 h1 是否可以 ping 通 h2
+创建一个包含 h1 和 h2 的网络拓扑，在 s1 设置阻断规则使 h1 无法 ping h2，测试h1和h2的连通性。测试 h1 是否可以 ping 通 h2，若不通请修复。测试h1和h2的连通性
+创建一个包含 h1、h2、h3 ，每台主机连接了一台交换机，三台交换机链式连接的网络拓扑，断开 s2 与 s3 的链路，测试 h1 是否可以 ping 通 h3
+创建一个包含 h1~h5 ，每台主机连接了一台交换机，每台交换机链式连接的网络拓扑，断开 s1 与 s2 的链路，恢复 s1 与 s2 的链路，测试 h1 是否可以 ping 通 h5
+创建一个包含 h1~h10 的大型网络拓扑，从 h1~h10 中选取 5 对主机（比如 h1-h2, h3-h4, h5-h6, h7-h8, h9-h10），如果发现 ping 不通则自动修复
+创建一个包含 h1 和 h2 的网络拓扑，阻断h1和h2之间的通信，等待10秒，测试 h1 是否可以 ping 通 h2，若不通请修复
+创建一个简易拓扑，限制h1的带宽为10兆，5秒后，解除对h1的带宽限制。测试h1到h2的速度
+创建一个包含两个主机h1和h2，分别连接到两台交换机s1和s2,两台交换机连接。断开s1和s2的连接。恢复s1和s2之间的连接
+创建一个包含40台主机的拓扑，测试所有主机之间是否能通信
+创建35台主机的环状拓扑，测试全部主机连通性
+
+# 文件路径: ./test/temporary.py
+import os
+import json
+import csv
+import time
+import requests
+from datetime import datetime
+from pathlib import Path
+
+# === 配置路径 ===
+intent_file = "/data/gjw/Meta-IBN/test/intent.txt"
+log_dir = "/data/gjw/Meta-IBN/logs"
+output_path = "/data/gjw/Meta-IBN/result/intent_test_result_20250804_013125.csv"
+
+# === 加载意图列表（只取最后两条）===
+with open(intent_file, "r", encoding="utf-8") as f:
+    intent_list = [line.strip() for line in f if line.strip()]
+intent_subset = intent_list[-2:]
+start_intent_idx = len(intent_list) - 2
+
+# === 准备追加写入 CSV 文件 ===
+csvfile = open(output_path, "a", newline="", encoding="utf-8")
+writer = csv.DictWriter(csvfile, fieldnames=["意图编号", "执行轮次", "步骤数", "耗时(s)", "是否成功"])
+
+def find_entries_by_trace_id(log_dir, trace_id):
+    files = sorted(Path(log_dir).glob("topo_*.jsonl"), key=os.path.getmtime)
+    if not files:
+        return []
+    latest_file = files[-1]
+    with open(latest_file, "r", encoding="utf-8") as f:
+        blocks = f.read().strip().split("\n\n")
+        entries = []
+        for block in blocks:
+            try:
+                record = json.loads(block)
+                if record.get("trace_id") == trace_id:
+                    entries.append(record)
+            except Exception:
+                continue
+    return entries
+
+def wait_for_final_step(log_dir, trace_id, timeout=60, interval=0.5):
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        entries = find_entries_by_trace_id(log_dir, trace_id)
+        if any(e.get("final_step") is True for e in entries):
+            return entries
+        time.sleep(interval)
+    print(f"  ⏳ 等待超时：trace_id={trace_id} 无 final_step")
+    return find_entries_by_trace_id(log_dir, trace_id)
+
+# === 补测循环 ===
+for i, intent in enumerate(intent_subset):
+    intent_id = start_intent_idx + i + 1
+    print(f"\n🚀 补测意图 {intent_id}: {intent}")
+
+    for run_idx in range(5):
+        print(f"  ⏱️ 第 {run_idx + 1}/5 次执行")
+
+        try:
+            start_time = datetime.now()
+            resp = requests.post(
+                "http://localhost:5000/intent",
+                json={"intent": intent},
+                timeout=60
+            )
+            if resp.status_code != 200:
+                raise Exception(f"返回码异常: {resp.status_code}")
+            data = resp.json()
+        except Exception as e:
+            print(f"  ❌ 请求异常: {e}")
+            writer.writerow({
+                "意图编号": intent_id,
+                "执行轮次": run_idx + 1,
+                "步骤数": 0,
+                "耗时(s)": -1,
+                "是否成功": False
+            })
+            continue
+
+        trace_id = data.get("trace_id")
+        if not trace_id:
+            print(f"  ⚠️ 缺失 trace_id，无法统计步骤数")
+            writer.writerow({
+                "意图编号": intent_id,
+                "执行轮次": run_idx + 1,
+                "步骤数": 0,
+                "耗时(s)": -1,
+                "是否成功": False
+            })
+            continue
+
+        entries = wait_for_final_step(log_dir, trace_id)
+        end_time = datetime.now()
+        duration = round((end_time - start_time).total_seconds(), 3)
+
+        step_count = len(entries)
+        success = all(e.get("result") is True for e in entries)
+
+        writer.writerow({
+            "意图编号": intent_id,
+            "执行轮次": run_idx + 1,
+            "步骤数": step_count,
+            "耗时(s)": duration,
+            "是否成功": success
+        })
+
+        # 清空网络拓扑
+        try:
+            clear_resp = requests.post("http://localhost:5000/cleanup", timeout=30)
+            if clear_resp.status_code == 200:
+                print("  🧹 网络拓扑已清空")
+            else:
+                print(f"  ⚠️ 清理拓扑失败: {clear_resp.status_code}")
+        except Exception as e:
+            print(f"  ❌ 清理拓扑请求失败: {e}")
+
+csvfile.close()
+print(f"\n✅ 补测完成，结果已追加至：{output_path}")
+
+
+# 文件路径: ./test/test_intent_batch.py
+import os
+import json
+import csv
+import time
+import requests
+from datetime import datetime
+from pathlib import Path
+
+# === 配置路径 ===
+intent_file = "/data/gjw/Meta-IBN/test/intent.txt"
+log_dir = "/data/gjw/Meta-IBN/logs"
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+output_path = f"/data/gjw/Meta-IBN/result/intent_test_result_{timestamp}.csv"
+
+# === 加载意图列表 ===
+with open(intent_file, "r", encoding="utf-8") as f:
+    intent_list = [line.strip() for line in f if line.strip()]
+
+# === 初始化 CSV 写入器 ===
+os.makedirs(os.path.dirname(output_path), exist_ok=True)
+csvfile = open(output_path, "w", newline="", encoding="utf-8")
+writer = csv.DictWriter(csvfile, fieldnames=["意图编号", "执行轮次", "步骤数", "耗时(s)", "是否成功"])
+writer.writeheader()
+
+def find_entries_by_trace_id(log_dir, trace_id):
+    """
+    查找最新日志文件中指定 trace_id 的所有日志条目
+    """
+    files = sorted(Path(log_dir).glob("topo_*.jsonl"), key=os.path.getmtime)
+    if not files:
+        return []
+    latest_file = files[-1]
+    with open(latest_file, "r", encoding="utf-8") as f:
+        blocks = f.read().strip().split("\n\n")
+        entries = []
+        for block in blocks:
+            try:
+                record = json.loads(block)
+                if record.get("trace_id") == trace_id:
+                    entries.append(record)
+            except Exception:
+                continue
+    return entries
+
+# === 主测试循环 ===
+for idx, intent in enumerate(intent_list):
+    print(f"\n🚀 正在测试意图 {idx + 1}/{len(intent_list)}: {intent}")
+
+    for run_idx in range(5):
+        print(f"  ⏱️ 第 {run_idx + 1}/5 次执行")
+
+        start_time = datetime.now()
+
+        # === 发送意图指令 ===
+        try:
+            resp = requests.post(
+                "http://localhost:5000/intent",
+                json={"intent": intent},
+                timeout=60
+            )
+            if resp.status_code != 200:
+                raise Exception(f"返回码异常: {resp.status_code}")
+            data = resp.json()
+        except Exception as e:
+            print(f"  ❌ 请求异常: {e}")
+            writer.writerow({
+                "意图编号": idx + 1,
+                "执行轮次": run_idx + 1,
+                "步骤数": 0,
+                "耗时(s)": -1,
+                "是否成功": False
+            })
+            continue
+
+        end_time = datetime.now()
+        duration = round((end_time - start_time).total_seconds(), 3)
+
+        # === 从响应中获取 trace_id 并分析日志 ===
+        trace_id = data.get("trace_id")
+        if not trace_id:
+            print(f"  ⚠️ 缺失 trace_id，无法统计步骤数")
+            writer.writerow({
+                "意图编号": idx + 1,
+                "执行轮次": run_idx + 1,
+                "步骤数": 0,
+                "耗时(s)": duration,
+                "是否成功": False
+            })
+            continue
+
+        time.sleep(0.5)  # 等日志写入完成
+        entries = find_entries_by_trace_id(log_dir, trace_id)
+        step_count = len(entries)
+        success = all(e.get("result") is True for e in entries)
+
+        # === 写入测试结果 ===
+        writer.writerow({
+            "意图编号": idx + 1,
+            "执行轮次": run_idx + 1,
+            "步骤数": step_count,
+            "耗时(s)": duration,
+            "是否成功": success
+        })
+
+        # === 清空网络拓扑 ===
+        try:
+            clear_resp = requests.post("http://localhost:5000/cleanup", timeout=30)
+            if clear_resp.status_code == 200:
+                print("  🧹 网络拓扑已清空")
+            else:
+                print(f"  ⚠️ 清理拓扑失败: {clear_resp.status_code}")
+        except Exception as e:
+            print(f"  ❌ 清理拓扑请求失败: {e}")
+
+# === 关闭 CSV 文件 ===
+csvfile.close()
+print(f"\n✅ 所有测试完成，结果已保存至：{output_path}")
 
 
 # 文件路径: ./frontend/templates/index.html

@@ -6,7 +6,7 @@ TARGET_EXTENSIONS = ['.py', '.html', '.txt']
 def list_target_files(base_path, self_filename):
     code_structure = []
     file_paths = []
-    SKIP_DIRS = {'logs', 'test'}  # 只跳过 logs 和 test 文件夹
+    SKIP_DIRS = {'logs'}  # 只跳过 logs 和 test 文件夹
     for root, dirs, files in os.walk(base_path):
         # 过滤不想进入的目录
         dirs[:] = [d for d in dirs if d not in SKIP_DIRS]

@@ -9,23 +9,19 @@ from pathlib import Path
 # === 配置路径 ===
 intent_file = "/data/gjw/Meta-IBN/test/intent.txt"
 log_dir = "/data/gjw/Meta-IBN/logs"
-timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-output_path = f"/data/gjw/Meta-IBN/result/intent_test_result_{timestamp}.csv"
+output_path = "/data/gjw/Meta-IBN/result/intent_test_result_20250804_013125.csv"
 
-# === 加载意图列表 ===
+# === 加载意图列表（只取最后两条）===
 with open(intent_file, "r", encoding="utf-8") as f:
     intent_list = [line.strip() for line in f if line.strip()]
+intent_subset = intent_list[-2:]
+start_intent_idx = len(intent_list) - 2
 
-# === 初始化 CSV 写入器 ===
-os.makedirs(os.path.dirname(output_path), exist_ok=True)
-csvfile = open(output_path, "w", newline="", encoding="utf-8")
+# === 准备追加写入 CSV 文件 ===
+csvfile = open(output_path, "a", newline="", encoding="utf-8")
 writer = csv.DictWriter(csvfile, fieldnames=["意图编号", "执行轮次", "步骤数", "耗时(s)", "是否成功"])
-writer.writeheader()
 
 def find_entries_by_trace_id(log_dir, trace_id):
-    """
-    查找最新日志文件中指定 trace_id 的所有日志条目
-    """
     files = sorted(Path(log_dir).glob("topo_*.jsonl"), key=os.path.getmtime)
     if not files:
         return []
@@ -42,17 +38,26 @@ def find_entries_by_trace_id(log_dir, trace_id):
                 continue
     return entries
 
-# === 主测试循环 ===
-for idx, intent in enumerate(intent_list):
-    print(f"\n🚀 正在测试意图 {idx + 1}/{len(intent_list)}: {intent}")
+def wait_for_final_step(log_dir, trace_id, timeout=60, interval=0.5):
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        entries = find_entries_by_trace_id(log_dir, trace_id)
+        if any(e.get("final_step") is True for e in entries):
+            return entries
+        time.sleep(interval)
+    print(f"  ⏳ 等待超时：trace_id={trace_id} 无 final_step")
+    return find_entries_by_trace_id(log_dir, trace_id)
+
+# === 补测循环 ===
+for i, intent in enumerate(intent_subset):
+    intent_id = start_intent_idx + i + 1
+    print(f"\n🚀 补测意图 {intent_id}: {intent}")
 
     for run_idx in range(5):
         print(f"  ⏱️ 第 {run_idx + 1}/5 次执行")
 
-        start_time = datetime.now()
-
-        # === 发送意图指令 ===
         try:
+            start_time = datetime.now()
             resp = requests.post(
                 "http://localhost:5000/intent",
                 json={"intent": intent},
@@ -64,7 +69,7 @@ for idx, intent in enumerate(intent_list):
         except Exception as e:
             print(f"  ❌ 请求异常: {e}")
             writer.writerow({
-                "意图编号": idx + 1,
+                "意图编号": intent_id,
                 "执行轮次": run_idx + 1,
                 "步骤数": 0,
                 "耗时(s)": -1,
@@ -72,37 +77,44 @@ for idx, intent in enumerate(intent_list):
             })
             continue
 
-        end_time = datetime.now()
-        duration = round((end_time - start_time).total_seconds(), 3)
-
-        # === 从响应中获取 trace_id 并分析日志 ===
         trace_id = data.get("trace_id")
         if not trace_id:
             print(f"  ⚠️ 缺失 trace_id，无法统计步骤数")
             writer.writerow({
-                "意图编号": idx + 1,
+                "意图编号": intent_id,
                 "执行轮次": run_idx + 1,
                 "步骤数": 0,
-                "耗时(s)": duration,
+                "耗时(s)": -1,
                 "是否成功": False
             })
             continue
 
-        time.sleep(0.5)  # 等日志写入完成
-        entries = find_entries_by_trace_id(log_dir, trace_id)
+        # 强制等待直到日志中出现 final_step=True
+        entries = []
+        print(f"  ⏳ 正在等待 trace_id={trace_id} 的 final_step 出现...")
+        while True:
+            entries = find_entries_by_trace_id(log_dir, trace_id)
+            if any(e.get("final_step") is True for e in entries):
+                print("  ✅ final_step 出现，准备记录结果并清理拓扑")
+                break
+            time.sleep(0.5)
+
+        end_time = datetime.now()
+
+        duration = round((end_time - start_time).total_seconds(), 3)
+
         step_count = len(entries)
         success = all(e.get("result") is True for e in entries)
 
-        # === 写入测试结果 ===
         writer.writerow({
-            "意图编号": idx + 1,
+            "意图编号": intent_id,
             "执行轮次": run_idx + 1,
             "步骤数": step_count,
             "耗时(s)": duration,
             "是否成功": success
         })
 
-        # === 清空网络拓扑 ===
+        # 清空网络拓扑
         try:
             clear_resp = requests.post("http://localhost:5000/cleanup", timeout=30)
             if clear_resp.status_code == 200:
@@ -112,6 +124,5 @@ for idx, intent in enumerate(intent_list):
         except Exception as e:
             print(f"  ❌ 清理拓扑请求失败: {e}")
 
-# === 关闭 CSV 文件 ===
 csvfile.close()
-print(f"\n✅ 所有测试完成，结果已保存至：{output_path}")
+print(f"\n✅ 补测完成，结果已追加至：{output_path}")

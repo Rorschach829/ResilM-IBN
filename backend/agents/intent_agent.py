@@ -95,18 +95,3 @@ class IntentAgent:
         for instr in instructions:
             send_intent(instr, sender="IntentAgent", trace_id=trace_id)  # ✅ 统一传入 trace_id
 
-    # def send_instruction(self, intent_text: str):
-    #     """
-    #     核心入口：解析自然语言意图，转换为结构化指令，并统一发送到 message_pool
-    #     """
-    #     try:
-    #         instructions = self.intent_to_instruction(intent_text)
-    #     except Exception as e:
-    #         print(f"[IntentAgent] ❌ 指令解析失败: {e}")
-    #         return
-
-    #     trace_id = str(uuid.uuid4())
-    #     print(f"[IntentAgent] ✅ 拆解为 {len(instructions)} 条指令，trace_id={trace_id}")
-
-    #     for instr in instructions:
-    #         send_intent(instr, sender="IntentAgent", trace_id=trace_id)

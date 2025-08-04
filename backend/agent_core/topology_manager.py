@@ -38,24 +38,6 @@ class TopologyManager:
             msg = f"❌ 拓扑创建失败，仅注册到 {len(mm.valid_hosts)} 台主机，期望为 {expected_hosts}"
             return False, msg, len(mm.valid_hosts)
 
-    # def create_topology(self, instruction: dict) -> str:
-
-    #     result = mm.rebuild_topology(instruction)
-    #     # 在执行创建拓扑的时候创建新的日志文件
-    #     start_new_intent_log()
-        
-    #     if mm.global_net:
-    #         net = mm.global_net
-    #         expected_hosts = len(net.hosts)
-    #         if self._wait_for_all_hosts(expected=expected_hosts):
-    #             build_and_send_all_path_intents(net)
-    #             print("[INTENT] 路径流表下发完成 ✅")
-    #         else:
-    #             print(f"[INTENT] ❌ 等待超时，期望注册 {expected_hosts} 台主机，实际不足")
-
-    #     return result
-
-
     def shutdown_topology(self) -> str:
         return mm.stop_topology()
 
