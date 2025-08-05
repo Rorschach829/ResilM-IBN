@@ -176,7 +176,10 @@ def stop_topology() -> str:
 
         # ✅ 系统级残留清理
         os.system("mn -c")
-
+        time.sleep(5)
+        residual_check = os.popen("ip link show | grep s1").read()
+        if residual_check:
+            print("[WARNING] 清理后 s1 仍存在，可能有残留")
         print("[CLEANUP] ✅ 已清除 Mininet 实例 + 缓存结构 + 系统残留")
         return "✅ 拓扑已停止并清理残留资源"
 

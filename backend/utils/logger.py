@@ -13,7 +13,6 @@ def init_logger():
     global CURRENT_LOG_FILE
     CURRENT_LOG_FILE = None
 
-
 def start_new_intent_log():
     global CURRENT_LOG_FILE
     now = datetime.now()
@@ -29,6 +28,7 @@ def start_new_intent_log():
 
     clean_old_logs(max_keep=2)
     return CURRENT_LOG_FILE
+
 
 
 def get_latest_log_file():
@@ -58,6 +58,7 @@ def log_intent(intent_text: str, instruction: dict, result: str):
 
     with open(CURRENT_LOG_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(log_entry, ensure_ascii=False, indent=2) + "\n\n")
+        f.flush()
 
 
 # ✅ 更推荐的结构化日志记录方式
@@ -91,6 +92,7 @@ def record_agent_result(message: dict, result: bool, agent_name: str, extra_info
 
     with open(CURRENT_LOG_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False, indent=2) + "\n\n")
+        f.flush()
 
 
 def clean_old_logs(max_keep: int = 2):

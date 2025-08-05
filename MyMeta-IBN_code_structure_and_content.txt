@@ -54,9 +54,8 @@ Meta-IBN/
         __init__.py
         auto_generate_path_intents.py
     test/
+        __init__.py
         intent.txt
-        temporary.py
-        test_intent_batch.py
         templates/
             index.html
 
@@ -213,7 +212,7 @@ if __name__ == '__main__':
 
 
 # 文件路径: ./tmp/intent_log_path.txt
-/data/gjw/Meta-IBN/logs/topo_20250804_152048.jsonl
+/data/gjw/Meta-IBN/logs/topo_20250805_141305.jsonl
 
 # 文件路径: ./backend/__init__.py
 
@@ -242,7 +241,9 @@ from backend.agents.json_builder_agent import JSONBuilderAgent
 import uuid
 from backend.coordinator.message_pool import message_pool
 from backend.utils.logger import CURRENT_LOG_FILE
-
+# from test.temporary import find_entries_by_trace_id
+import threading
+import time
 
 init_logger()
 
@@ -251,7 +252,7 @@ intent_agent = IntentAgent()
 @app.route("/")
 def index():
     return render_template("index.html")
-
+    
 @app.route("/intent", methods=["POST"])
 def handle_intent():
     data = request.json
@@ -279,6 +280,16 @@ def handle_intent():
 
     except Exception as e:
         return jsonify({"error": f"指令处理失败: {str(e)}"}), 500
+
+
+
+
+
+# 判断服务端是否空闲
+@app.route("/is_idle", methods=["GET"])
+def is_idle():
+    return jsonify({"idle": not is_executing})
+
 
 # 获取当前拓扑
 @app.route("/topology", methods=["GET"])
@@ -2899,7 +2910,6 @@ def init_logger():
     global CURRENT_LOG_FILE
     CURRENT_LOG_FILE = None
 
-
 def start_new_intent_log():
     global CURRENT_LOG_FILE
     now = datetime.now()
@@ -2915,6 +2925,7 @@ def start_new_intent_log():
 
     clean_old_logs(max_keep=2)
     return CURRENT_LOG_FILE
+
 
 
 def get_latest_log_file():
@@ -3538,6 +3549,9 @@ def build_and_send_all_path_intents(net):
     print(f"[INTENT] 流表下发完成: 成功 {success_count} 对，失败 {fail_count} 对")
 
 
+# 文件路径: ./test/__init__.py
+
+
 # 文件路径: ./test/intent.txt
 创建一个包含 h1 和 h2 的网络拓扑
 创建一个包含 h1 和 h2 的网络拓扑，测试 h1 是否可以 ping 通 h2
@@ -3554,247 +3568,6 @@ def build_and_send_all_path_intents(net):
 创建一个包含两个主机h1和h2，分别连接到两台交换机s1和s2,两台交换机连接。断开s1和s2的连接。恢复s1和s2之间的连接
 创建一个包含40台主机的拓扑，测试所有主机之间是否能通信
 创建35台主机的环状拓扑，测试全部主机连通性
-
-# 文件路径: ./test/temporary.py
-import os
-import json
-import csv
-import time
-import requests
-from datetime import datetime
-from pathlib import Path
-
-# === 配置路径 ===
-intent_file = "/data/gjw/Meta-IBN/test/intent.txt"
-log_dir = "/data/gjw/Meta-IBN/logs"
-output_path = "/data/gjw/Meta-IBN/result/intent_test_result_20250804_013125.csv"
-
-# === 加载意图列表（只取最后两条）===
-with open(intent_file, "r", encoding="utf-8") as f:
-    intent_list = [line.strip() for line in f if line.strip()]
-intent_subset = intent_list[-2:]
-start_intent_idx = len(intent_list) - 2
-
-# === 准备追加写入 CSV 文件 ===
-csvfile = open(output_path, "a", newline="", encoding="utf-8")
-writer = csv.DictWriter(csvfile, fieldnames=["意图编号", "执行轮次", "步骤数", "耗时(s)", "是否成功"])
-
-def find_entries_by_trace_id(log_dir, trace_id):
-    files = sorted(Path(log_dir).glob("topo_*.jsonl"), key=os.path.getmtime)
-    if not files:
-        return []
-    latest_file = files[-1]
-    with open(latest_file, "r", encoding="utf-8") as f:
-        blocks = f.read().strip().split("\n\n")
-        entries = []
-        for block in blocks:
-            try:
-                record = json.loads(block)
-                if record.get("trace_id") == trace_id:
-                    entries.append(record)
-            except Exception:
-                continue
-    return entries
-
-def wait_for_final_step(log_dir, trace_id, timeout=60, interval=0.5):
-    start_time = time.time()
-    while time.time() - start_time < timeout:
-        entries = find_entries_by_trace_id(log_dir, trace_id)
-        if any(e.get("final_step") is True for e in entries):
-            return entries
-        time.sleep(interval)
-    print(f"  ⏳ 等待超时：trace_id={trace_id} 无 final_step")
-    return find_entries_by_trace_id(log_dir, trace_id)
-
-# === 补测循环 ===
-for i, intent in enumerate(intent_subset):
-    intent_id = start_intent_idx + i + 1
-    print(f"\n🚀 补测意图 {intent_id}: {intent}")
-
-    for run_idx in range(5):
-        print(f"  ⏱️ 第 {run_idx + 1}/5 次执行")
-
-        try:
-            start_time = datetime.now()
-            resp = requests.post(
-                "http://localhost:5000/intent",
-                json={"intent": intent},
-                timeout=60
-            )
-            if resp.status_code != 200:
-                raise Exception(f"返回码异常: {resp.status_code}")
-            data = resp.json()
-        except Exception as e:
-            print(f"  ❌ 请求异常: {e}")
-            writer.writerow({
-                "意图编号": intent_id,
-                "执行轮次": run_idx + 1,
-                "步骤数": 0,
-                "耗时(s)": -1,
-                "是否成功": False
-            })
-            continue
-
-        trace_id = data.get("trace_id")
-        if not trace_id:
-            print(f"  ⚠️ 缺失 trace_id，无法统计步骤数")
-            writer.writerow({
-                "意图编号": intent_id,
-                "执行轮次": run_idx + 1,
-                "步骤数": 0,
-                "耗时(s)": -1,
-                "是否成功": False
-            })
-            continue
-
-        entries = wait_for_final_step(log_dir, trace_id)
-        end_time = datetime.now()
-        duration = round((end_time - start_time).total_seconds(), 3)
-
-        step_count = len(entries)
-        success = all(e.get("result") is True for e in entries)
-
-        writer.writerow({
-            "意图编号": intent_id,
-            "执行轮次": run_idx + 1,
-            "步骤数": step_count,
-            "耗时(s)": duration,
-            "是否成功": success
-        })
-
-        # 清空网络拓扑
-        try:
-            clear_resp = requests.post("http://localhost:5000/cleanup", timeout=30)
-            if clear_resp.status_code == 200:
-                print("  🧹 网络拓扑已清空")
-            else:
-                print(f"  ⚠️ 清理拓扑失败: {clear_resp.status_code}")
-        except Exception as e:
-            print(f"  ❌ 清理拓扑请求失败: {e}")
-
-csvfile.close()
-print(f"\n✅ 补测完成，结果已追加至：{output_path}")
-
-
-# 文件路径: ./test/test_intent_batch.py
-import os
-import json
-import csv
-import time
-import requests
-from datetime import datetime
-from pathlib import Path
-
-# === 配置路径 ===
-intent_file = "/data/gjw/Meta-IBN/test/intent.txt"
-log_dir = "/data/gjw/Meta-IBN/logs"
-timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-output_path = f"/data/gjw/Meta-IBN/result/intent_test_result_{timestamp}.csv"
-
-# === 加载意图列表 ===
-with open(intent_file, "r", encoding="utf-8") as f:
-    intent_list = [line.strip() for line in f if line.strip()]
-
-# === 初始化 CSV 写入器 ===
-os.makedirs(os.path.dirname(output_path), exist_ok=True)
-csvfile = open(output_path, "w", newline="", encoding="utf-8")
-writer = csv.DictWriter(csvfile, fieldnames=["意图编号", "执行轮次", "步骤数", "耗时(s)", "是否成功"])
-writer.writeheader()
-
-def find_entries_by_trace_id(log_dir, trace_id):
-    """
-    查找最新日志文件中指定 trace_id 的所有日志条目
-    """
-    files = sorted(Path(log_dir).glob("topo_*.jsonl"), key=os.path.getmtime)
-    if not files:
-        return []
-    latest_file = files[-1]
-    with open(latest_file, "r", encoding="utf-8") as f:
-        blocks = f.read().strip().split("\n\n")
-        entries = []
-        for block in blocks:
-            try:
-                record = json.loads(block)
-                if record.get("trace_id") == trace_id:
-                    entries.append(record)
-            except Exception:
-                continue
-    return entries
-
-# === 主测试循环 ===
-for idx, intent in enumerate(intent_list):
-    print(f"\n🚀 正在测试意图 {idx + 1}/{len(intent_list)}: {intent}")
-
-    for run_idx in range(5):
-        print(f"  ⏱️ 第 {run_idx + 1}/5 次执行")
-
-        start_time = datetime.now()
-
-        # === 发送意图指令 ===
-        try:
-            resp = requests.post(
-                "http://localhost:5000/intent",
-                json={"intent": intent},
-                timeout=60
-            )
-            if resp.status_code != 200:
-                raise Exception(f"返回码异常: {resp.status_code}")
-            data = resp.json()
-        except Exception as e:
-            print(f"  ❌ 请求异常: {e}")
-            writer.writerow({
-                "意图编号": idx + 1,
-                "执行轮次": run_idx + 1,
-                "步骤数": 0,
-                "耗时(s)": -1,
-                "是否成功": False
-            })
-            continue
-
-        end_time = datetime.now()
-        duration = round((end_time - start_time).total_seconds(), 3)
-
-        # === 从响应中获取 trace_id 并分析日志 ===
-        trace_id = data.get("trace_id")
-        if not trace_id:
-            print(f"  ⚠️ 缺失 trace_id，无法统计步骤数")
-            writer.writerow({
-                "意图编号": idx + 1,
-                "执行轮次": run_idx + 1,
-                "步骤数": 0,
-                "耗时(s)": duration,
-                "是否成功": False
-            })
-            continue
-
-        time.sleep(0.5)  # 等日志写入完成
-        entries = find_entries_by_trace_id(log_dir, trace_id)
-        step_count = len(entries)
-        success = all(e.get("result") is True for e in entries)
-
-        # === 写入测试结果 ===
-        writer.writerow({
-            "意图编号": idx + 1,
-            "执行轮次": run_idx + 1,
-            "步骤数": step_count,
-            "耗时(s)": duration,
-            "是否成功": success
-        })
-
-        # === 清空网络拓扑 ===
-        try:
-            clear_resp = requests.post("http://localhost:5000/cleanup", timeout=30)
-            if clear_resp.status_code == 200:
-                print("  🧹 网络拓扑已清空")
-            else:
-                print(f"  ⚠️ 清理拓扑失败: {clear_resp.status_code}")
-        except Exception as e:
-            print(f"  ❌ 清理拓扑请求失败: {e}")
-
-# === 关闭 CSV 文件 ===
-csvfile.close()
-print(f"\n✅ 所有测试完成，结果已保存至：{output_path}")
-
 
 # 文件路径: ./frontend/templates/index.html
 <!DOCTYPE html>

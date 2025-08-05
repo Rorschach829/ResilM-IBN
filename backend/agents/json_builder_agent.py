@@ -79,11 +79,6 @@ class JSONBuilderAgent:
             print("[JSONBuilderAgent] ❌ 返回结果不是 JSON 数组")
             return
 
-        # for instr in json_array:
-        #     instr["trace_id"] = trace_id  # ✅ 强制覆写 trace_id
-        #     instr["intent_text"] = intent_text  # 可选：补全 intent_text
-        #     print(f"[JSONBuilderAgent] 📤 发送指令: {instr.get('action')} trace_id={trace_id}")
-        #     send_intent(instr, sender="JSONBuilderAgent", trace_id=trace_id)
         for i, instr in enumerate(json_array):
             instr["trace_id"] = trace_id
             instr["intent_text"] = intent_text

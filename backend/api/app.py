@@ -18,7 +18,7 @@ from backend.utils.logger import CURRENT_LOG_FILE
 # from test.temporary import find_entries_by_trace_id
 import threading
 import time
-
+from datetime import datetime
 init_logger()
 
 intent_agent = IntentAgent()
@@ -26,7 +26,7 @@ intent_agent = IntentAgent()
 @app.route("/")
 def index():
     return render_template("index.html")
-
+    
 @app.route("/intent", methods=["POST"])
 def handle_intent():
     data = request.json
@@ -35,11 +35,15 @@ def handle_intent():
         return jsonify({"error": "意图内容不能为空"}), 400
 
     try:
+        # ✅ 打印当前时间戳（可读格式和Unix秒）
+        now = datetime.now()
+        print(f"[INTENT RECEIVED] 时间: {now.strftime('%Y-%m-%d %H:%M:%S')}  (Unix: {int(now.timestamp())})")
+
         instructions = intent_agent.intent_to_instruction(intent_text)
         if any(instr.get("action") == "create_topology" for instr in instructions):
             start_new_intent_log()
-        trace_id = str(uuid.uuid4())
 
+        trace_id = str(uuid.uuid4())
         for instr in instructions:
             instr["intent_text"] = intent_text
             instr["trace_id"] = trace_id
@@ -54,6 +58,12 @@ def handle_intent():
 
     except Exception as e:
         return jsonify({"error": f"指令处理失败: {str(e)}"}), 500
+
+
+# 判断服务端是否空闲
+@app.route("/is_idle", methods=["GET"])
+def is_idle():
+    return jsonify({"idle": not is_executing})
 
 
 # 获取当前拓扑

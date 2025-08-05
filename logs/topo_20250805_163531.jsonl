@@ -1,9 +1,9 @@
 {
-  "timestamp": "2025-08-04 15:35:46",
-  "trace_id": "166f2b39-7e8f-4037-a3c0-b3eb91db0de3",
+  "timestamp": "2025-08-05 16:35:46",
+  "trace_id": "8e485f44-da89-4000-9ae4-926f2eae56f8",
   "sender": "TopologyAgent",
   "action": "create_topology",
-  "intent": "创建一个包含40台主机的拓扑，测试所有主机之间是否能通信",
+  "intent": "创建35台主机的环状拓扑，测试全部主机连通性",
   "instruction": {
     "action": "create_topology",
     "hosts": [
@@ -41,22 +41,14 @@
       "h32",
       "h33",
       "h34",
-      "h35",
-      "h36",
-      "h37",
-      "h38",
-      "h39",
-      "h40"
+      "h35"
     ],
     "switches": [
       "s1",
       "s2",
       "s3",
       "s4",
-      "s5",
-      "s6",
-      "s7",
-      "s8"
+      "s5"
     ],
     "links": [
       {
@@ -77,18 +69,6 @@
       },
       {
         "src": "s5",
-        "dst": "s6"
-      },
-      {
-        "src": "s6",
-        "dst": "s7"
-      },
-      {
-        "src": "s7",
-        "dst": "s8"
-      },
-      {
-        "src": "s8",
         "dst": "s1"
       },
       {
@@ -113,11 +93,11 @@
       },
       {
         "src": "h6",
-        "dst": "s2"
+        "dst": "s1"
       },
       {
         "src": "h7",
-        "dst": "s2"
+        "dst": "s1"
       },
       {
         "src": "h8",
@@ -133,19 +113,19 @@
       },
       {
         "src": "h11",
-        "dst": "s3"
+        "dst": "s2"
       },
       {
         "src": "h12",
-        "dst": "s3"
+        "dst": "s2"
       },
       {
         "src": "h13",
-        "dst": "s3"
+        "dst": "s2"
       },
       {
         "src": "h14",
-        "dst": "s3"
+        "dst": "s2"
       },
       {
         "src": "h15",
@@ -153,103 +133,83 @@
       },
       {
         "src": "h16",
-        "dst": "s4"
+        "dst": "s3"
       },
       {
         "src": "h17",
-        "dst": "s4"
+        "dst": "s3"
       },
       {
         "src": "h18",
-        "dst": "s4"
+        "dst": "s3"
       },
       {
         "src": "h19",
-        "dst": "s4"
+        "dst": "s3"
       },
       {
         "src": "h20",
-        "dst": "s4"
+        "dst": "s3"
       },
       {
         "src": "h21",
-        "dst": "s5"
+        "dst": "s3"
       },
       {
         "src": "h22",
-        "dst": "s5"
+        "dst": "s4"
       },
       {
         "src": "h23",
-        "dst": "s5"
+        "dst": "s4"
       },
       {
         "src": "h24",
-        "dst": "s5"
+        "dst": "s4"
       },
       {
         "src": "h25",
-        "dst": "s5"
+        "dst": "s4"
       },
       {
         "src": "h26",
-        "dst": "s6"
+        "dst": "s4"
       },
       {
         "src": "h27",
-        "dst": "s6"
+        "dst": "s4"
       },
       {
         "src": "h28",
-        "dst": "s6"
+        "dst": "s4"
       },
       {
         "src": "h29",
-        "dst": "s6"
+        "dst": "s5"
       },
       {
         "src": "h30",
-        "dst": "s6"
+        "dst": "s5"
       },
       {
         "src": "h31",
-        "dst": "s7"
+        "dst": "s5"
       },
       {
         "src": "h32",
-        "dst": "s7"
+        "dst": "s5"
       },
       {
         "src": "h33",
-        "dst": "s7"
+        "dst": "s5"
       },
       {
         "src": "h34",
-        "dst": "s7"
+        "dst": "s5"
       },
       {
         "src": "h35",
-        "dst": "s7"
-      },
-      {
-        "src": "h36",
-        "dst": "s8"
-      },
-      {
-        "src": "h37",
-        "dst": "s8"
-      },
-      {
-        "src": "h38",
-        "dst": "s8"
-      },
-      {
-        "src": "h39",
-        "dst": "s8"
-      },
-      {
-        "src": "h40",
-        "dst": "s8"
+        "dst": "s5"
       }
     ],
     "controller": {
@@ -257,37 +217,37 @@
       "ip": "127.0.0.1",
       "port": 6633
     },
-    "trace_id": "166f2b39-7e8f-4037-a3c0-b3eb91db0de3",
-    "intent_text": "创建一个包含40台主机的拓扑，测试所有主机之间是否能通信",
+    "trace_id": "8e485f44-da89-4000-9ae4-926f2eae56f8",
+    "intent_text": "创建35台主机的环状拓扑，测试全部主机连通性",
     "sender": "JSONBuilderAgent",
-    "timestamp": 1754292908,
-    "time_str": "2025-08-04 15:35:08",
-    "_result": "✅ 拓扑创建成功，包含 40 台主机，路径流表已下发"
+    "timestamp": 1754382915,
+    "time_str": "2025-08-05 16:35:15",
+    "_result": "✅ 拓扑创建成功，包含 35 台主机，路径流表已下发"
   },
   "result": true,
-  "message": "✅ 拓扑创建成功，包含 40 台主机，路径流表已下发",
-  "value": "40 hosts"
+  "message": "✅ 拓扑创建成功，包含 35 台主机，路径流表已下发",
+  "value": "35 hosts"
 }
 
 {
-  "timestamp": "2025-08-04 15:35:48",
-  "trace_id": "166f2b39-7e8f-4037-a3c0-b3eb91db0de3",
+  "timestamp": "2025-08-05 16:35:47",
+  "trace_id": "8e485f44-da89-4000-9ae4-926f2eae56f8",
   "sender": "QAAgent",
   "action": "ping_all",
-  "intent": "创建一个包含40台主机的拓扑，测试所有主机之间是否能通信",
+  "intent": "创建35台主机的环状拓扑，测试全部主机连通性",
   "instruction": {
     "action": "ping_all",
-    "trace_id": "166f2b39-7e8f-4037-a3c0-b3eb91db0de3",
-    "intent_text": "创建一个包含40台主机的拓扑，测试所有主机之间是否能通信",
+    "trace_id": "8e485f44-da89-4000-9ae4-926f2eae56f8",
+    "intent_text": "创建35台主机的环状拓扑，测试全部主机连通性",
     "final_step": true,
     "sender": "JSONBuilderAgent",
-    "timestamp": 1754292946,
-    "time_str": "2025-08-04 15:35:46",
-    "_result": "✅ 所有主机均可互相通信，共测试 1560 对"
+    "timestamp": 1754382946,
+    "time_str": "2025-08-05 16:35:46",
+    "_result": "✅ 所有主机均可互相通信，共测试 1190 对"
   },
   "result": true,
-  "message": "✅ 所有主机均可互相通信，共测试 1560 对",
+  "message": "✅ 所有主机均可互相通信，共测试 1190 对",
   "final_step": true,
-  "value": "1560 pairs verified"
+  "value": "1190 pairs verified"
 }
 
