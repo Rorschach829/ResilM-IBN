@@ -9,6 +9,7 @@ from ryu.app.wsgi import ControllerBase, WSGIApplication, route
 from ryu.controller import dpset
 from webob import Response
 # from backend.net_simulation import net_bridge
+from typing import Dict, Optional, Tuple, List
 
 import networkx as nx
 import json
@@ -133,7 +134,14 @@ class PathIntentController(app_manager.RyuApp):
 
         # 注册主机
         self.logger.info(f"✅ 注册新主机: {src_mac} (dpid={dpid}, port={in_port}, ip={src_ip})")
-        self.hosts[src_mac] = (dpid, in_port, src_mac)
+        # self.hosts[src_mac] = (dpid, in_port, src_mac)
+        self.hosts[src_mac] = {
+            "dpid": dpid,
+            "port": in_port,
+            "mac": src_mac,
+            "ip": src_ip
+        }
+
 
         # flooding only for ARP
         if arp_pkt:
@@ -191,8 +199,13 @@ class PathIntentController(app_manager.RyuApp):
 
         self.logger.info(f"📌 [注册主机总数]: {len(self.hosts)}")
         self.logger.info(f"📌 [主机注册信息]:")
-        for mac, (dpid, port, _) in self.hosts.items():
+        # for mac, (dpid, port, _) in self.hosts.items():
+        #     self.logger.info(f"    MAC={mac}, DPID={dpid}, Port={port}")
+        for mac, info in self.hosts.items():
+            dpid = info["dpid"]
+            port = info["port"]
             self.logger.info(f"    MAC={mac}, DPID={dpid}, Port={port}")
+
 
         self.logger.info(f"准备下发路径：src_host={src_host}, dst_host={dst_host}")
         self.logger.info(f"当前已注册主机: {list(self.hosts.keys())}")
@@ -203,10 +216,14 @@ class PathIntentController(app_manager.RyuApp):
         if src_mac not in self.hosts or dst_mac not in self.hosts:
             raise Exception("源或目标主机未注册")
 
-        # src_dpid, src_port, _ = self.hosts[src_mac]
-        # dst_dpid, dst_port, _ = self.hosts[dst_mac]
-        src_dpid_num, src_port, _ = self.hosts[src_mac]
-        dst_dpid_num, dst_port, _ = self.hosts[dst_mac]
+        # src_dpid_num, src_port, _ = self.hosts[src_mac]
+        # dst_dpid_num, dst_port, _ = self.hosts[dst_mac]
+
+        src_dpid_num = self.hosts[src_mac]["dpid"]
+        src_port = self.hosts[src_mac]["port"]
+        dst_dpid_num = self.hosts[dst_mac]["dpid"]
+        dst_port = self.hosts[dst_mac]["port"]
+
 
         src_dpid = f"s{src_dpid_num}"
         dst_dpid = f"s{dst_dpid_num}"
@@ -223,7 +240,9 @@ class PathIntentController(app_manager.RyuApp):
             cur = path[i]
             if i == len(path) - 1:
                 # 最后一跳：交换机到目的主机
-                out_port = self.hosts[dst_mac][1]
+                # out_port = self.hosts[dst_mac][1]
+                out_port = self.hosts[dst_mac]["port"]
+
                 self.logger.info(f"➡️ [正向] 最后一跳: dpid={cur} → 主机 {dst_mac}, 使用注册端口 {out_port}")
             else:
                 nex = path[i + 1]
@@ -240,7 +259,9 @@ class PathIntentController(app_manager.RyuApp):
         for i in range(len(path) - 1, -1, -1):
             cur = path[i]
             if i == 0:
-                out_port = self.hosts[src_mac][1]
+                # out_port = self.hosts[src_mac][1]
+                out_port = self.hosts[src_mac]["port"]
+
                 self.logger.info(f"↩️ [回程] 最后一跳: dpid={cur} → 主机 {src_mac}, 使用注册端口 {out_port}")
             else:
                 pre = path[i - 1]
@@ -254,7 +275,10 @@ class PathIntentController(app_manager.RyuApp):
             self.logger.info(f"🚀 下发回程流表: dpid={cur}, src={dst_mac}, dst={src_mac}, out_port={out_port}")
 
         # 添加主机默认接入流表（以便非路径流量也能送到主机）★7.13这一天的目的就是为了让gpt写出下面这几行。气死我了。
-        for mac, (dpid, port, _) in self.hosts.items():
+        # for mac, (dpid, port, _) in self.hosts.items():
+        for mac, info in self.hosts.items():
+            dpid = info["dpid"]
+            port = info["port"]
             dp = self.get_datapath(dpid)
             match = dp.ofproto_parser.OFPMatch(eth_dst=mac)
             actions = [dp.ofproto_parser.OFPActionOutput(port)]
@@ -291,7 +315,9 @@ class PathIntentController(app_manager.RyuApp):
                 del self.datapaths[dpid]
 
                 # 2. 清除主机列表中挂在该交换机下的主机
-                to_remove = [mac for mac, (d, _, _) in self.hosts.items() if d == dpid]
+                # to_remove = [mac for mac, (d, _, _) in self.hosts.items() if d == dpid]
+                to_remove = [mac for mac, info in self.hosts.items() if info["dpid"] == dpid]
+
                 for mac in to_remove:
                     del self.hosts[mac]
                     self.logger.info(f"🧹 主机已移除: {mac} (原挂在 DPID={dpid})")
@@ -346,6 +372,22 @@ class PathIntentController(app_manager.RyuApp):
         except Exception as e:
             self.logger.error(f"❌ 链路断开失败: {e}")
             self.logger.error(traceback.format_exc())
+
+    def get_mac_from_ip(self, ip: str) -> Optional[str]:
+        # print(f"[DEBUG] 🔍 当前 self.hosts 内容：")
+        # for mac, info in self.hosts.items():
+        #     print(f"  MAC: {mac}, info: {info}, 类型: {type(info)}")
+
+        for mac, info in self.hosts.items():
+            if isinstance(info, dict) and info.get("ip") == ip:
+                print(f"[Controller] ✅ 查找到 IP → MAC: {ip} → {mac}")
+                return mac
+
+        print(f"[Controller] ❌ 未找到 IP → MAC 映射: {ip}")
+        return None
+
+    def get_registered_hosts(self) -> Dict[str, dict]:
+        return self.hosts
 
 
     # 重置控制器状态
@@ -421,3 +463,4 @@ class IntentWebController(ControllerBase):
             print("[DEBUG] 链路断开失败堆栈:")
             traceback.print_exc()
             return Response(status=500, body=f"❌ 执行失败: {e}")
+
