@@ -126,9 +126,6 @@ class FlowAgent:
             hub.spawn(controller.install_path_between_hosts, src_mac, dst_mac)
             hub.spawn(controller.install_path_between_hosts, dst_mac, src_mac)
 
-            # controller.install_path_between_hosts(src_mac, dst_mac)
-            # controller.install_path_between_hosts(dst_mac, src_mac)
-
             print(f"[FlowAgent] ✅ repair_suggestion 已使用 controller 自动安装双向路径流表")
 
             record_agent_result(

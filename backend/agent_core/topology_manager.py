@@ -22,7 +22,7 @@ class TopologyManager:
         result = mm.rebuild_topology(instruction)
 
         # 新日志文件（trace_id 也在这里重新生成）
-        start_new_intent_log()
+        # start_new_intent_log()
 
         if not mm.global_net:
             return False, "❌ 拓扑创建失败，global_net 为空", 0

@@ -40,8 +40,10 @@ def handle_intent():
         print(f"[INTENT RECEIVED] 时间: {now.strftime('%Y-%m-%d %H:%M:%S')}  (Unix: {int(now.timestamp())})")
 
         instructions = intent_agent.intent_to_instruction(intent_text)
-        if any(instr.get("action") == "create_topology" for instr in instructions):
-            start_new_intent_log()
+
+        # if any(instr.get("action") == "create_topology" for instr in instructions):
+        # 每当发送意图的时候都创建一个拓扑
+        start_new_intent_log()
 
         trace_id = str(uuid.uuid4())
         for instr in instructions:

@@ -95,7 +95,7 @@ def record_agent_result(message: dict, result: bool, agent_name: str, extra_info
         f.flush()
 
 
-def clean_old_logs(max_keep: int = 2):
+def clean_old_logs(max_keep: int = 20):
     log_files = sorted(
         glob.glob(os.path.join(BASE_LOG_DIR, "topo_*.jsonl")),
         key=os.path.getmtime,

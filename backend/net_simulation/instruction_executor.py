@@ -7,7 +7,7 @@ from backend.net_simulation.mininet_manager import stop_topology
 from backend.net_simulation.ryu_controller import send_flow_mod
 from backend.utils.ryu_utils import get_all_switch_ids
 from backend.utils.utils import convert_switch_name_to_dpid
-from backend.utils.logger import start_new_intent_log, log_intent
+from backend.utils.logger import log_intent
 from ryu_app.auto_generate_path_intents import build_and_send_all_path_intents
 
 # 初始化协调器（延迟导入 + 单例缓存）
