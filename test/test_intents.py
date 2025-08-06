@@ -11,7 +11,7 @@ from datetime import datetime
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 INTENT_FILE = os.path.join(BASE_DIR, "intent.txt")
 LOG_PATH_FILE = os.path.join(BASE_DIR, "../tmp/intent_log_path.txt")
-RESULT_DIR = os.path.join(BASE_DIR, "../result")
+RESULT_BASE_DIR = os.path.join(BASE_DIR, "../result")
 API_INTENT_URL = "http://localhost:5000/intent"
 API_CLEANUP_URL = "http://localhost:5000/cleanup"
 POLL_INTERVAL = 1
@@ -41,26 +41,9 @@ def wait_for_final_step(trace_id, log_path):
 
     while True:
         entries = load_all_log_entries(log_path)
-        print(f"[DEBUG] 日志条数: {len(entries)}")
-        matched = []
-
-        for e in entries:
-            entry_trace = str(e.get("trace_id", "")).strip()
-            print("[DEBUG] 日志 trace_id:", repr(entry_trace))
-            print("[DEBUG] 目标 trace_id:", repr(trace_id.strip()))
-            if entry_trace == trace_id.strip():
-                print("[DEBUG] ✅ 匹配成功")
-                matched.append(e)
-
-        print(f"[DEBUG] 匹配成功条数: {len(matched)}")
-
-        # for e in matched:
-        #     print("---- 匹配日志记录 ----")
-        #     print(json.dumps(e, indent=2, ensure_ascii=False))
-
+        matched = [e for e in entries if str(e.get("trace_id", "")).strip() == trace_id.strip()]
         if any(e.get("final_step") is True for e in matched):
             return matched
-
         time.sleep(POLL_INTERVAL)
 
 def is_success(entries):
@@ -80,15 +63,14 @@ def cleanup_topology():
 # ============ 主逻辑 ============
 
 def main():
-    today_str = datetime.now().strftime("%Y%m%d_%H%M")
-    if not os.path.exists(RESULT_DIR):
-        os.makedirs(RESULT_DIR)
-    result_file = os.path.join(RESULT_DIR, f"intent_test_results_{today_str}.csv")
+    timestamp_str = datetime.now().strftime("%Y%m%d_%H%M")
+    result_dir = os.path.join(RESULT_BASE_DIR, f"intent_test_{timestamp_str}")
+    os.makedirs(result_dir, exist_ok=True)
+
+    result_file = os.path.join(result_dir, f"intent_summary_{timestamp_str}.csv")
 
     with open(INTENT_FILE, "r", encoding="utf-8") as f:
         lines = [line.strip() for line in f if line.strip()]
-
-
 
     with open(result_file, "w", newline="", encoding="utf-8") as csvfile:
         writer = csv.writer(csvfile)
@@ -110,7 +92,6 @@ def main():
 
                     resp_json = response.json()
                     trace_id = resp_json.get("trace_id")
-
                     if not trace_id:
                         print("❌ 无 trace_id 返回")
                         writer.writerow([idx, round_num, "N/A", "N/A", "无trace_id"])
@@ -118,12 +99,7 @@ def main():
 
                     log_path = read_latest_log_path()
                     entries = wait_for_final_step(trace_id, log_path)
-                    end_time = None
-                    for e in entries:
-                        if e.get("final_step"):
-                            end_time = e.get("instruction", {}).get("timestamp", start_time)
-                            break
-
+                    end_time = next((e.get("instruction", {}).get("timestamp") for e in entries if e.get("final_step")), None)
                     duration = end_time - start_time if end_time else "?"
                     steps = len(entries)
                     success = is_success(entries)
