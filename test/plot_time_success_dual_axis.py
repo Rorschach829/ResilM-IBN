@@ -1,67 +1,3 @@
-# import pandas as pd
-# import matplotlib.pyplot as plt
-# from matplotlib.patches import Patch
-
-# # Load CSV
-# df = pd.read_csv("intent_summary.csv")
-
-# # Assign color
-# def get_color(hosts):
-#     if hosts < 4:
-#         return "green"
-#     elif hosts < 10:
-#         return "blue"
-#     else:
-#         return "red"
-
-# df["color"] = df["hosts"].apply(get_color)
-
-# # ✅ Widen figure to avoid squeezing
-# fig, ax1 = plt.subplots(figsize=(14, 6))  # ← 从 10 宽变为 12 宽
-
-# # Plot bars (avg_time)
-# bars = ax1.bar(df["intent_id"], df["avg_time"], color=df["color"])
-# ax1.set_xlabel("Intent ID")
-# ax1.set_ylabel("Average Execution Time (s)", color="black")
-# ax1.tick_params(axis="y", labelcolor="black")
-# ax1.set_ylim(0, df["avg_time"].max() * 1.2)
-# ax1.grid(axis="y", linestyle="--", alpha=0.6)
-
-# # Plot success rate line (right Y-axis)
-# ax2 = ax1.twinx()
-# ax2.plot(df["intent_id"], df["success_rate"], color="black", marker="o", linewidth=2)
-# ax2.set_ylabel("Success Rate (%)", color="black")
-# ax2.tick_params(axis="y", labelcolor="black")
-# ax2.set_ylim(0, 110)
-
-# # Fix x-ticks
-# plt.xticks(ticks=df["intent_id"], labels=df["intent_id"], fontsize=10)
-
-# # Legend
-# legend_elements = [
-#     Patch(facecolor='green', label='Small Topology (hosts < 4)'),
-#     Patch(facecolor='blue', label='Medium Topology (4 ≤ hosts < 10)'),
-#     Patch(facecolor='red', label='Large Topology (hosts ≥ 10)'),
-#     Patch(facecolor='gray', label='Avg Time (bar)'),
-#     Patch(facecolor='white', edgecolor='black', label='Success Rate (line)', linewidth=2)
-# ]
-
-# # ✅ Place legend outside top-right, but tighter
-# plt.legend(
-#     handles=legend_elements,
-#     loc="upper left",
-#     bbox_to_anchor=(1.18, 1.0)  # ← 更紧凑不超出图边界太多
-# )
-
-# # Title
-# plt.title("Intent Execution Time and Success Rate by Topology Size")
-
-# # ✅ Don't squeeze the chart too much
-# plt.tight_layout(rect=[0, 0, 0.82, 1])  # ← 主图最多占 85%，让图例自然靠右
-
-# # Save image
-# plt.savefig("intent_time_success_combined.png", dpi=300)
-# print("✅ Chart saved as intent_time_success_combined.png")
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
@@ -111,6 +47,19 @@ ax1.set_ylabel("Average Execution Time (s)", color="black")
 ax1.tick_params(axis="y", labelcolor="black")
 ax1.set_ylim(0, df["avg_time"].max() * 1.2)
 ax1.grid(axis="y", linestyle="--", alpha=0.6)
+
+for bar in bars:
+    height = bar.get_height()
+    ax1.text(
+        bar.get_x() + bar.get_width() / 2,
+        height + 0.5,  # 调高一点避免遮挡柱子
+        f"{height:.1f}",
+        ha="center",
+        va="bottom",
+        fontsize=9,
+        color="black"
+    )
+
 
 # 右轴：成功率折线图
 ax2 = ax1.twinx()

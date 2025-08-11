@@ -26,7 +26,7 @@ def start_new_intent_log():
     with open(TMP_LOG_PATH_FILE, "w") as f:
         f.write(CURRENT_LOG_FILE)
 
-    clean_old_logs(max_keep=2)
+    # clean_old_logs(max_keep=2)
     return CURRENT_LOG_FILE
 
 

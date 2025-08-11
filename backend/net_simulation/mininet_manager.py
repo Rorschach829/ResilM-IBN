@@ -11,9 +11,13 @@ from backend.utils.topology_utils import TopologyGraph
 
 global_net_ip_map = {}   # IP → host 对象
 graph = TopologyGraph()  # 网络图结构（用于路径查找）
-
-
 global_net = None  # 全局保存net实例
+
+switches = {}
+hosts = {}
+topology_name = None
+valid_hosts = set()
+CURRENT_LOG_FILE = None
 
 def run_mininet_code(code: str) -> str:
     global global_net
@@ -159,32 +163,36 @@ def rebuild_topology(intent_json: dict) -> str:
 
 def stop_topology() -> str:
     global global_net, CURRENT_LOG_FILE
+    global switches, hosts, graph, topology_name, valid_hosts
+
     try:
         if global_net:
             global_net.stop()
+            for c in global_net.controllers:
+                c.stop()
             global_net = None
 
-        # ✅ 清理 MininetManager 中的拓扑缓存
-        mm.switches.clear()
-        mm.hosts.clear()
-        mm.graph.clear()
-        mm.topology_name = None
-        mm.valid_hosts.clear()  # 如果有合法主机注册缓存
-
-        # ✅ 清理日志指针
+        switches.clear()
+        hosts.clear()
+        graph.graph.clear()
+        topology_name = None
+        valid_hosts.clear()
         CURRENT_LOG_FILE = None
 
-        # ✅ 系统级残留清理
         os.system("mn -c")
-        time.sleep(5)
-        residual_check = os.popen("ip link show | grep s1").read()
+        time.sleep(3)
+
+        residual_check = os.popen("ip link show | grep -E 's[0-9]+'").read()
         if residual_check:
-            print("[WARNING] 清理后 s1 仍存在，可能有残留")
+            print("[WARNING] 清理后仍存在交换机接口残留：")
+            print(residual_check)
+
         print("[CLEANUP] ✅ 已清除 Mininet 实例 + 缓存结构 + 系统残留")
         return "✅ 拓扑已停止并清理残留资源"
 
     except Exception as e:
         return f"❌ 停止拓扑失败: {str(e)}"
+
 
 
 def build_mininet_code_from_json(data: dict, enable_stp: bool = True) -> str:

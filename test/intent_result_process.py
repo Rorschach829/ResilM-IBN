@@ -1,34 +1,9 @@
-# import pandas as pd
-
-# # 读取原始 result.txt 文件
-# df = pd.read_csv("../result/intent_test_results_20250805_1513.csv")
-
-# # 将“成功”列转换为布尔值
-# df["成功"] = df["成功"].map(lambda x: 1 if str(x).strip() == "是" else 0)
-
-# # 分组计算统计指标
-# summary = df.groupby("编号").agg(
-#     steps=("步骤数", "mean"),
-#     avg_time=("耗时(秒)", lambda x: x[x >= 0].mean()),  # 排除 -1
-#     success_rate=("成功", "mean")
-# ).reset_index()
-
-# # 重命名列名
-# summary = summary.rename(columns={"编号": "intent_id"})
-
-# # 转换成功率为百分比格式
-# summary["success_rate"] = (summary["success_rate"] * 100).round(2)
-
-# # 保存为新的 CSV 文件
-# summary.to_csv("intent_summary.csv", index=False)
-
-# print("处理完成，输出文件为 intent_summary.csv")
 import pandas as pd
 import os
 import glob
 
 # ======== 第一步：定位最新创建的子文件夹 ========
-RESULT_BASE_DIR = "../result"
+RESULT_BASE_DIR = "result"
 subdirs = [os.path.join(RESULT_BASE_DIR, d) for d in os.listdir(RESULT_BASE_DIR) if os.path.isdir(os.path.join(RESULT_BASE_DIR, d))]
 
 if not subdirs:

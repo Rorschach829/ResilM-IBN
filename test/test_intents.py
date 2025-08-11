@@ -11,7 +11,7 @@ from datetime import datetime
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 INTENT_FILE = os.path.join(BASE_DIR, "intent.txt")
 LOG_PATH_FILE = os.path.join(BASE_DIR, "../tmp/intent_log_path.txt")
-RESULT_BASE_DIR = os.path.join(BASE_DIR, "../result")
+RESULT_BASE_DIR = os.path.join(BASE_DIR, "result")
 API_INTENT_URL = "http://localhost:5000/intent"
 API_CLEANUP_URL = "http://localhost:5000/cleanup"
 POLL_INTERVAL = 1
@@ -55,6 +55,7 @@ def cleanup_topology():
         response = requests.post(API_CLEANUP_URL)
         if response.status_code == 200:
             print("[CLEANUP] 拓扑清理完成。")
+            time.sleep(5)
         else:
             print(f"[CLEANUP] 清理失败: {response.status_code}")
     except Exception as e:
