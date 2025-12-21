@@ -389,7 +389,6 @@ class PathIntentController(app_manager.RyuApp):
     def get_registered_hosts(self) -> Dict[str, dict]:
         return self.hosts
 
-
     # 重置控制器状态
     def reset_state(self):
         self.logger.info("[RESET] 正在清空控制器状态")
@@ -397,7 +396,6 @@ class PathIntentController(app_manager.RyuApp):
         self.net.clear()
         self.datapaths.clear()
         self.logger.info("[RESET] 控制器状态清空完毕")
-
 
 
 class IntentWebController(ControllerBase):
@@ -453,7 +451,6 @@ class IntentWebController(ControllerBase):
             src, dst = content.get("link", [None, None])
             if not src or not dst:
                 return Response(status=400, body="参数错误")
-
             # ❌ 删除旧代码：不要再导入 mm.global_net
             # ✅ mininet_net 由 Flask 注入 controller，直接使用
             self.intent_app.link_down(src, dst)
@@ -463,4 +460,3 @@ class IntentWebController(ControllerBase):
             print("[DEBUG] 链路断开失败堆栈:")
             traceback.print_exc()
             return Response(status=500, body=f"❌ 执行失败: {e}")
-

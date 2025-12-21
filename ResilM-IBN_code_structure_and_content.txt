@@ -60,17 +60,27 @@ Meta-IBN/
         intent.txt
         intent_result_process.py
         intent_steps_bar.py
+        intent_steps_bar_bw.py
         plot_intent_success_rate.py
         plot_intent_time_bars.py
         plot_time_success_dual_axis.py
+        plot_time_success_dual_axis_bw.py
         test_intents.py
+            intent_test_20250808_1424/
+                plot_steps_time_bw.py
+        tmp_result/
+            merge.py
         result2/
             exp2.txt
             exp2_proccessed.py
             plot_exp2_avg_time_grouped.py
+            plot_exp2_avg_time_grouped_bw.py
             plot_exp2_intent_result_rate.py
+            plot_exp2_intent_result_rate_bw.py
             plot_exp2_repair_rate.py
+            plot_exp2_repair_rate_bw.py
             plot_exp2_time_boxplot.py
+            plot_exp2_time_boxplot_bw.py
         templates/
             index.html
 
@@ -155,7 +165,7 @@ import ryu.topology.switches
 # ✅ Flask App 导入
 from backend.api.app import app as flask_app
 
-from backend.coordinator.coordinator_agent import CoordinatorAgent
+# from backend.coordinator.coordinator_agent import CoordinatorAgent
 from backend.agents.flow_agent import FlowAgent
 from backend.agents.qa_agent import QAAgent
 from backend.agents.topology_agent import TopologyAgent
@@ -227,7 +237,7 @@ if __name__ == '__main__':
 
 
 # 文件路径: ./tmp/intent_log_path.txt
-/data/gjw/Meta-IBN/logs/topo_20250806_185354.jsonl
+/data/gjw/Meta-IBN/logs/topo_20250812_133525.jsonl
 
 # 文件路径: ./backend/__init__.py
 
@@ -374,7 +384,7 @@ _coordinator = None
 def _get_coordinator():
     global _coordinator
     if _coordinator is None:
-        from backend.coordinator.coordinator_agent import CoordinatorAgent
+        # from backend.coordinator.coordinator_agent import CoordinatorAgent
         _coordinator = CoordinatorAgent()
     return _coordinator
 
@@ -452,9 +462,13 @@ from backend.utils.topology_utils import TopologyGraph
 
 global_net_ip_map = {}   # IP → host 对象
 graph = TopologyGraph()  # 网络图结构（用于路径查找）
-
-
 global_net = None  # 全局保存net实例
+
+switches = {}
+hosts = {}
+topology_name = None
+valid_hosts = set()
+CURRENT_LOG_FILE = None
 
 def run_mininet_code(code: str) -> str:
     global global_net
@@ -600,32 +614,36 @@ def rebuild_topology(intent_json: dict) -> str:
 
 def stop_topology() -> str:
     global global_net, CURRENT_LOG_FILE
+    global switches, hosts, graph, topology_name, valid_hosts
+
     try:
         if global_net:
             global_net.stop()
+            for c in global_net.controllers:
+                c.stop()
             global_net = None
 
-        # ✅ 清理 MininetManager 中的拓扑缓存
-        mm.switches.clear()
-        mm.hosts.clear()
-        mm.graph.clear()
-        mm.topology_name = None
-        mm.valid_hosts.clear()  # 如果有合法主机注册缓存
-
-        # ✅ 清理日志指针
+        switches.clear()
+        hosts.clear()
+        graph.graph.clear()
+        topology_name = None
+        valid_hosts.clear()
         CURRENT_LOG_FILE = None
 
-        # ✅ 系统级残留清理
         os.system("mn -c")
-        time.sleep(5)
-        residual_check = os.popen("ip link show | grep s1").read()
+        time.sleep(3)
+
+        residual_check = os.popen("ip link show | grep -E 's[0-9]+'").read()
         if residual_check:
-            print("[WARNING] 清理后 s1 仍存在，可能有残留")
+            print("[WARNING] 清理后仍存在交换机接口残留：")
+            print(residual_check)
+
         print("[CLEANUP] ✅ 已清除 Mininet 实例 + 缓存结构 + 系统残留")
         return "✅ 拓扑已停止并清理残留资源"
 
     except Exception as e:
         return f"❌ 停止拓扑失败: {str(e)}"
+
 
 
 def build_mininet_code_from_json(data: dict, enable_stp: bool = True) -> str:
@@ -1229,7 +1247,6 @@ class PathIntentController(app_manager.RyuApp):
     def get_registered_hosts(self) -> Dict[str, dict]:
         return self.hosts
 
-
     # 重置控制器状态
     def reset_state(self):
         self.logger.info("[RESET] 正在清空控制器状态")
@@ -1237,7 +1254,6 @@ class PathIntentController(app_manager.RyuApp):
         self.net.clear()
         self.datapaths.clear()
         self.logger.info("[RESET] 控制器状态清空完毕")
-
 
 
 class IntentWebController(ControllerBase):
@@ -1293,7 +1309,6 @@ class IntentWebController(ControllerBase):
             src, dst = content.get("link", [None, None])
             if not src or not dst:
                 return Response(status=400, body="参数错误")
-
             # ❌ 删除旧代码：不要再导入 mm.global_net
             # ✅ mininet_net 由 Flask 注入 controller，直接使用
             self.intent_app.link_down(src, dst)
@@ -1303,7 +1318,6 @@ class IntentWebController(ControllerBase):
             print("[DEBUG] 链路断开失败堆栈:")
             traceback.print_exc()
             return Response(status=500, body=f"❌ 执行失败: {e}")
-
 
 
 # 文件路径: ./backend/controller/controller_instance.py
@@ -2112,6 +2126,7 @@ class TopologyAgent:
 - link_up
 - ping_all
 - wait
+- false
 ---
 
 【输出要求】：
@@ -2284,7 +2299,7 @@ class TopologyAgent:
 - 步骤表达中如含多个步骤，系统会逐条调用本提示词构造 JSON，请你始终只处理当前的单个步骤；
 - 不需要关心上下文，不要输出数组；
 - 请严格遵守字段名、格式和结构要求，任何不匹配都视为错误。
-
+- 当动作无法匹配到任意一条时，该步骤的动作设置为false
 
 # 文件路径: ./backend/agent_core/flowtable_manager.py
 # backend/utils/flowtable_manager.py
@@ -2903,19 +2918,19 @@ from typing import Optional
 
 # 协调型 Agent（负责初始化、统一发布指令）
 # 已弃用
-class CoordinatorAgent:
-    def __init__(self):
-        self.name = "CoordinatorAgent"
-        print("[CoordinatorAgent] ✅ 初始化完成")
+# class CoordinatorAgent:
+#     def __init__(self):
+#         self.name = "CoordinatorAgent"
+#         print("[CoordinatorAgent] ✅ 初始化完成")
 
-    def handle_instruction_list(self, instructions: list, trace_id: Optional[str] = None) -> list:
-        results = []
-        trace_id = str(uuid.uuid4())  # ✅ 统一生成 trace_id 给本轮指令
-        for instr in instructions:
-            send_intent(instr, sender="IntentAgent", trace_id=trace_id)
-            result = instr.get("_result", "⚠️ 无结果")
-            results.append(result)
-        return results
+#     def handle_instruction_list(self, instructions: list, trace_id: Optional[str] = None) -> list:
+#         results = []
+#         trace_id = str(uuid.uuid4())  # ✅ 统一生成 trace_id 给本轮指令
+#         for instr in instructions:
+#             send_intent(instr, sender="IntentAgent", trace_id=trace_id)
+#             result = instr.get("_result", "⚠️ 无结果")
+#             results.append(result)
+#         return results
 
 
 # 文件路径: ./backend/coordinator/message_pool.py
@@ -3092,7 +3107,7 @@ def start_new_intent_log():
     with open(TMP_LOG_PATH_FILE, "w") as f:
         f.write(CURRENT_LOG_FILE)
 
-    clean_old_logs(max_keep=2)
+    # clean_old_logs(max_keep=2)
     return CURRENT_LOG_FILE
 
 
@@ -3724,141 +3739,7 @@ def build_and_send_all_path_intents(net):
 
 
 # 文件路径: ./test/exp2_test.py
-# import os
-# import re
-# import json
-# import time
-# import csv
-# import requests
-# from datetime import datetime
-
-# # =================== 配置路径 ===================
-
-# BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# EXP2_INTENT_FILE = os.path.join(BASE_DIR, "result2/exp2.txt")
-# LOG_PATH_FILE = os.path.join(BASE_DIR, "../tmp/intent_log_path.txt")
-# EXP2_CSV_FILE = os.path.join(BASE_DIR, "result2/exp2.csv")
-# API_URL = "http://localhost:5000/intent"
-
-# # =================== 工具函数 ===================
-
-# def read_intents(file_path):
-#     with open(file_path, "r", encoding="utf-8") as f:
-#         return [line.strip() for line in f if line.strip()]
-
-# def read_latest_log_path():
-#     with open(LOG_PATH_FILE, "r") as f:
-#         return f.read().strip()
-
-# def extract_host_pair(text):
-#     match = re.findall(r"h\d+", text)
-#     if len(match) >= 2:
-#         return f"{match[0]}-{match[1]}"
-#     return "unknown"
-
-# def load_log_entries(log_path):
-#     with open(log_path, "r", encoding="utf-8") as f:
-#         content = f.read()
-#     blocks = content.strip().split("\n\n")
-#     entries = []
-#     for block in blocks:
-#         try:
-#             entry = json.loads(block)
-#             entries.append(entry)
-#         except Exception as e:
-#             print(f"[解析失败] 跳过一条日志块: {e}")
-#     return entries
-
-# def wait_for_final(trace_id, log_path, timeout=60):
-#     print(f"[WAIT] 等待 trace_id={trace_id} 执行完成...")
-#     start = time.time()
-#     while time.time() - start < timeout:
-#         entries = load_log_entries(log_path)
-#         matched = [e for e in entries if str(e.get("trace_id", "")).strip() == trace_id.strip()]
-#         if any(e.get("final_step") is True for e in matched):
-#             return matched
-#         time.sleep(1)
-#     raise TimeoutError("等待日志超时")
-
-# def analyze_entries(intent_id, intent, entries, start_time):
-#     host_pair = extract_host_pair(intent)
-#     repair_triggered = any(e.get("action") == "repair_suggestion" for e in entries)
-#     is_ping_success_before = not any("无法" in str(e.get("message", "")) for e in entries)
-#     repair_success = any(
-#         e.get("final_step") is True and 
-#         "可以" in str(e.get("message", "")) and 
-#         any(ee.get("action") == "repair_suggestion" for ee in entries)
-#         for e in entries
-#     )
-#     final_result = any(
-#         e.get("final_step") is True and "可以" in str(e.get("message", "")) 
-#         for e in entries
-#     )
-#     end_entry = next((e for e in entries if e.get("final_step") is True), None)
-#     if end_entry:
-#         end_time = end_entry.get("instruction", {}).get("timestamp", 0)
-#         total_time = end_time - start_time
-#     else:
-#         total_time = -1
-
-#     return {
-#         "intent_id": intent_id,
-#         "host_pair": host_pair,
-#         "repair_triggered": repair_triggered,
-#         "is_ping_success_before": is_ping_success_before,
-#         "repair_success": repair_success,
-#         "final_result": final_result,
-#         "total_time": total_time
-#     }
-
-# def load_existing_ids(csv_path):
-#     if not os.path.exists(csv_path):
-#         return 0
-#     with open(csv_path, "r", encoding="utf-8") as f:
-#         return sum(1 for line in f if line.strip()) - 1  # 减去表头
-
-# # =================== 主测试函数 ===================
-
-# def main():
-#     intents = read_intents(EXP2_INTENT_FILE)
-#     start_id = load_existing_ids(EXP2_CSV_FILE)
-#     print(f"[INFO] 已存在 {start_id} 条数据，从 intent_id={start_id+1} 开始")
-
-#     with open(EXP2_CSV_FILE, "a", newline="", encoding="utf-8") as f:
-#         writer = csv.DictWriter(f, fieldnames=[
-#             "intent_id", "host_pair", "repair_triggered", 
-#             "is_ping_success_before", "repair_success", 
-#             "final_result", "total_time"
-#         ])
-#         if start_id == 0:
-#             writer.writeheader()
-
-#         for offset, intent in enumerate(intents):
-#             intent_id = start_id + offset + 1
-#             print(f"\n🚀 执行 intent_id={intent_id}: {intent}")
-#             start_time = int(time.time())
-
-#             try:
-#                 resp = requests.post(API_URL, json={"intent": intent})
-#                 if resp.status_code != 200:
-#                     print(f"[ERROR] 请求失败: {resp.status_code}")
-#                     continue
-#                 trace_id = resp.json().get("trace_id")
-#                 if not trace_id:
-#                     print("[ERROR] 无 trace_id 返回")
-#                     continue
-
-#                 log_path = read_latest_log_path()
-#                 entries = wait_for_final(trace_id, log_path)
-#                 stats = analyze_entries(intent_id, intent, entries, start_time)
-#                 writer.writerow(stats)
-#                 print(f"✅ 统计完成: {stats}")
-
-#             except Exception as e:
-#                 print(f"[EXCEPTION] 执行异常: {e}")
-
-# if __name__ == "__main__":
-#     main()
+# 用于测试实验2自愈功能
 import os
 import re
 import json
@@ -3872,9 +3753,28 @@ from datetime import datetime
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 EXP2_INTENT_FILE = os.path.join(BASE_DIR, "result2/exp2.txt")
-EXP2_CSV_FILE = os.path.join(BASE_DIR, "result2/exp2.csv")
 LOG_PATH_FILE = os.path.join(BASE_DIR, "../tmp/intent_log_path.txt")
 API_URL = "http://localhost:5000/intent"
+
+# ========== 【默认方式：每次新建实验目录和文件，用于新建一次实验】 ==========
+# timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+# EXP2_OUTPUT_DIR = os.path.join(BASE_DIR, f"result2/exp2_test_{timestamp}")
+# os.makedirs(EXP2_OUTPUT_DIR, exist_ok=True)
+# EXP2_CSV_FILE = os.path.join(EXP2_OUTPUT_DIR, f"exp2_{timestamp}.csv")
+
+
+# ========== 【改为写入固定的实验结果文件,用于多轮实验数据添加】 ==========
+EXP2_FIXED_TIMESTAMP = "20250808_150011"
+EXP2_OUTPUT_DIR = os.path.join(BASE_DIR, f"result2/exp2_test_{EXP2_FIXED_TIMESTAMP}")
+EXP2_CSV_FILE = os.path.join(EXP2_OUTPUT_DIR, f"exp2_{EXP2_FIXED_TIMESTAMP}.csv")
+
+
+# ✅ 自动生成带时间戳的结果路径和文件名
+# timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+# EXP2_OUTPUT_DIR = os.path.join(BASE_DIR, f"result2/exp2_test_{timestamp}")
+# os.makedirs(EXP2_OUTPUT_DIR, exist_ok=True)
+# EXP2_CSV_FILE = os.path.join(EXP2_OUTPUT_DIR, f"exp2_{timestamp}.csv")
+
 
 # =================== 工具函数 ===================
 
@@ -3961,6 +3861,8 @@ def get_latest_round(csv_path):
 # =================== 主测试函数 ===================
 
 def main():
+    print(f"[INFO] 当前实验结果将保存至: {EXP2_CSV_FILE}")
+
     intents = read_intents(EXP2_INTENT_FILE)
     round_id = get_latest_round(EXP2_CSV_FILE) + 1
     print(f"[INFO] 当前为第 {round_id} 轮测试，共 {len(intents)} 条意图")
@@ -4038,37 +3940,12 @@ if __name__ == "__main__":
 创建35台主机的环状拓扑，测试全部主机连通性
 
 # 文件路径: ./test/intent_result_process.py
-# import pandas as pd
-
-# # 读取原始 result.txt 文件
-# df = pd.read_csv("../result/intent_test_results_20250805_1513.csv")
-
-# # 将“成功”列转换为布尔值
-# df["成功"] = df["成功"].map(lambda x: 1 if str(x).strip() == "是" else 0)
-
-# # 分组计算统计指标
-# summary = df.groupby("编号").agg(
-#     steps=("步骤数", "mean"),
-#     avg_time=("耗时(秒)", lambda x: x[x >= 0].mean()),  # 排除 -1
-#     success_rate=("成功", "mean")
-# ).reset_index()
-
-# # 重命名列名
-# summary = summary.rename(columns={"编号": "intent_id"})
-
-# # 转换成功率为百分比格式
-# summary["success_rate"] = (summary["success_rate"] * 100).round(2)
-
-# # 保存为新的 CSV 文件
-# summary.to_csv("intent_summary.csv", index=False)
-
-# print("处理完成，输出文件为 intent_summary.csv")
 import pandas as pd
 import os
 import glob
 
 # ======== 第一步：定位最新创建的子文件夹 ========
-RESULT_BASE_DIR = "../result"
+RESULT_BASE_DIR = "result"
 subdirs = [os.path.join(RESULT_BASE_DIR, d) for d in os.listdir(RESULT_BASE_DIR) if os.path.isdir(os.path.join(RESULT_BASE_DIR, d))]
 
 if not subdirs:
@@ -4187,6 +4064,116 @@ plt.close()
 print(f"✅ 已保存图像（含颜色图例）: {output_path}")
 
 
+# 文件路径: ./test/intent_steps_bar_bw.py
+# ======== 意图复杂度统计图（黑白打印版） ========
+import pandas as pd
+import matplotlib.pyplot as plt
+import os
+import numpy as np
+from matplotlib.patches import Patch
+import matplotlib.font_manager as fm
+import matplotlib
+
+# ======== 字体设置（使用服务器指定字体路径） ========
+font_path = "/usr/share/fonts/truetype/arphic-gbsn00lp/gbsn00lp.ttf"  # 文鼎PL简报宋
+fm.fontManager.addfont(font_path)
+prop = fm.FontProperties(fname=font_path)
+matplotlib.rcParams['font.family'] = prop.get_name()
+matplotlib.rcParams['axes.unicode_minus'] = False
+
+# ======== 第一步：定位最新创建的子文件夹 ========
+RESULT_BASE_DIR = "result"
+subdirs = [
+    os.path.join(RESULT_BASE_DIR, d)
+    for d in os.listdir(RESULT_BASE_DIR)
+    if os.path.isdir(os.path.join(RESULT_BASE_DIR, d))
+]
+
+if not subdirs:
+    raise RuntimeError("❌ 未找到任何子文件夹")
+
+latest_dir = max(subdirs, key=os.path.getmtime)
+print(f"✅ 最新结果文件夹为: {latest_dir}")
+
+# ======== 第二步：读取 intent_data_processed.csv 文件 ========
+csv_file = os.path.join(latest_dir, "intent_data_processed.csv")
+if not os.path.exists(csv_file):
+    raise RuntimeError("❌ 未找到 intent_data_processed.csv 文件")
+
+df = pd.read_csv(csv_file)
+df = df.sort_values(by="intent_id")
+
+# ======== 第三步：根据步骤数量划分复杂度等级并分配填充样式 ========
+def get_hatch(steps):
+    if steps <= 3:
+        return "//"   # 低复杂度
+    elif steps <= 6:
+        return "\\"   # 中复杂度
+    else:
+        return "xx"   # 高复杂度
+
+df["hatch"] = df["steps"].apply(get_hatch)
+
+# ======== 第四步：绘图 ========
+fig, ax = plt.subplots(figsize=(10, 6))
+
+bars = []
+x_pos = range(len(df))
+for i, row in enumerate(df.itertuples()):
+    bar = ax.bar(
+        i,
+        row.steps,
+        color="white",
+        edgecolor="black",
+        hatch=row.hatch,
+        linewidth=1.0
+    )
+    bars.append(bar)
+
+# 设置 X 轴刻度与标签
+ax.set_xticks(x_pos)
+ax.set_xticklabels(df["intent_id"], fontproperties=prop, fontsize=10)
+
+# 添加数值标签
+for i, row in enumerate(df.itertuples()):
+    ax.text(
+        i,
+        row.steps + 0.2,
+        f"{int(row.steps)}",
+        ha='center',
+        va='bottom',
+        fontsize=9,
+        fontproperties=prop
+    )
+
+# ======== 设置坐标轴与标题 ========
+ax.set_xlabel("意图编号", fontproperties=prop, fontsize=12)
+ax.set_ylabel("执行步骤数", fontproperties=prop, fontsize=12)
+ax.set_title("意图复杂度分布（填充样式表示复杂度等级）", fontproperties=prop, fontsize=13)
+ax.grid(axis='y', linestyle='--', alpha=0.6)
+
+# ======== 图例说明 ========
+legend_elements = [
+    Patch(facecolor='white', edgecolor='black', hatch='//', label='低复杂度（步骤 ≤ 3）'),
+    Patch(facecolor='white', edgecolor='black', hatch='\\', label='中复杂度（3 < 步骤 ≤ 6）'),
+    Patch(facecolor='white', edgecolor='black', hatch='xx', label='高复杂度（步骤 > 6）')
+]
+ax.legend(
+    handles=legend_elements,
+    loc="upper left",
+    bbox_to_anchor=(1.02, 1.0),
+    prop=prop,
+    fontsize=10
+)
+
+# ======== 布局与保存 ========
+plt.tight_layout(rect=[0, 0, 0.85, 1])
+output_path = os.path.join(latest_dir, "intent_steps_bar_bw.png")
+plt.savefig(output_path, dpi=300, bbox_inches="tight")
+plt.close()
+
+print(f"✅ 图表已保存至: {output_path}")
+
 # 文件路径: ./test/plot_intent_success_rate.py
 
 import pandas as pd
@@ -4301,70 +4288,7 @@ print("✅ Chart saved as avg_time_by_topology.png")
 
 
 # 文件路径: ./test/plot_time_success_dual_axis.py
-# import pandas as pd
-# import matplotlib.pyplot as plt
-# from matplotlib.patches import Patch
-
-# # Load CSV
-# df = pd.read_csv("intent_summary.csv")
-
-# # Assign color
-# def get_color(hosts):
-#     if hosts < 4:
-#         return "green"
-#     elif hosts < 10:
-#         return "blue"
-#     else:
-#         return "red"
-
-# df["color"] = df["hosts"].apply(get_color)
-
-# # ✅ Widen figure to avoid squeezing
-# fig, ax1 = plt.subplots(figsize=(14, 6))  # ← 从 10 宽变为 12 宽
-
-# # Plot bars (avg_time)
-# bars = ax1.bar(df["intent_id"], df["avg_time"], color=df["color"])
-# ax1.set_xlabel("Intent ID")
-# ax1.set_ylabel("Average Execution Time (s)", color="black")
-# ax1.tick_params(axis="y", labelcolor="black")
-# ax1.set_ylim(0, df["avg_time"].max() * 1.2)
-# ax1.grid(axis="y", linestyle="--", alpha=0.6)
-
-# # Plot success rate line (right Y-axis)
-# ax2 = ax1.twinx()
-# ax2.plot(df["intent_id"], df["success_rate"], color="black", marker="o", linewidth=2)
-# ax2.set_ylabel("Success Rate (%)", color="black")
-# ax2.tick_params(axis="y", labelcolor="black")
-# ax2.set_ylim(0, 110)
-
-# # Fix x-ticks
-# plt.xticks(ticks=df["intent_id"], labels=df["intent_id"], fontsize=10)
-
-# # Legend
-# legend_elements = [
-#     Patch(facecolor='green', label='Small Topology (hosts < 4)'),
-#     Patch(facecolor='blue', label='Medium Topology (4 ≤ hosts < 10)'),
-#     Patch(facecolor='red', label='Large Topology (hosts ≥ 10)'),
-#     Patch(facecolor='gray', label='Avg Time (bar)'),
-#     Patch(facecolor='white', edgecolor='black', label='Success Rate (line)', linewidth=2)
-# ]
-
-# # ✅ Place legend outside top-right, but tighter
-# plt.legend(
-#     handles=legend_elements,
-#     loc="upper left",
-#     bbox_to_anchor=(1.18, 1.0)  # ← 更紧凑不超出图边界太多
-# )
-
-# # Title
-# plt.title("Intent Execution Time and Success Rate by Topology Size")
-
-# # ✅ Don't squeeze the chart too much
-# plt.tight_layout(rect=[0, 0, 0.82, 1])  # ← 主图最多占 85%，让图例自然靠右
-
-# # Save image
-# plt.savefig("intent_time_success_combined.png", dpi=300)
-# print("✅ Chart saved as intent_time_success_combined.png")
+# 意图执行成功率与执行时间双轴图
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
@@ -4415,6 +4339,19 @@ ax1.tick_params(axis="y", labelcolor="black")
 ax1.set_ylim(0, df["avg_time"].max() * 1.2)
 ax1.grid(axis="y", linestyle="--", alpha=0.6)
 
+for bar in bars:
+    height = bar.get_height()
+    ax1.text(
+        bar.get_x() + bar.get_width() / 2,
+        height + 0.5,  # 调高一点避免遮挡柱子
+        f"{height:.1f}",
+        ha="center",
+        va="bottom",
+        fontsize=9,
+        color="black"
+    )
+
+
 # 右轴：成功率折线图
 ax2 = ax1.twinx()
 ax2.plot(df["intent_id"], df["success_rate"], color="black", marker="o", linewidth=2)
@@ -4451,6 +4388,138 @@ print(f"✅ 图表已保存至: {output_path}")
 
 
 
+# 文件路径: ./test/plot_time_success_dual_axis_bw.py
+# 意图执行成功率与执行时间双轴图（黑白打印版）⭐️
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
+from matplotlib.lines import Line2D
+import os
+import matplotlib
+import matplotlib.font_manager as fm
+
+font_path = "/usr/share/fonts/truetype/arphic-gbsn00lp/gbsn00lp.ttf"
+prop = fm.FontProperties(fname=font_path)
+
+# 用路径注册这款字体
+fm.fontManager.addfont(font_path)
+
+matplotlib.rcParams['font.family'] = prop.get_name()
+matplotlib.rcParams['font.sans-serif'] = [prop.get_name()]
+matplotlib.rcParams['axes.unicode_minus'] = False
+
+print(f"✅ 已加载字体：{prop.get_name()} ({font_path})")
+# ======== 第一步：定位最新创建的子文件夹 ========
+RESULT_BASE_DIR = "result"
+subdirs = [
+    os.path.join(RESULT_BASE_DIR, d)
+    for d in os.listdir(RESULT_BASE_DIR)
+    if os.path.isdir(os.path.join(RESULT_BASE_DIR, d))
+]
+
+if not subdirs:
+    raise RuntimeError("❌ 未找到任何子文件夹")
+
+latest_dir = max(subdirs, key=os.path.getmtime)
+print(f"✅ 最新结果文件夹为: {latest_dir}")
+
+# ======== 第二步：读取 intent_data_processed.csv 文件 ========
+csv_file = os.path.join(latest_dir, "intent_data_processed.csv")
+if not os.path.exists(csv_file):
+    raise RuntimeError("❌ 未找到 intent_data_processed.csv 文件")
+
+df = pd.read_csv(csv_file)
+print(f"✅ 成功读取数据，共 {len(df)} 条意图")
+
+# ======== 第三步：根据 hosts 列分配填充样式 ========
+def get_hatch(hosts):
+    if hosts < 4:
+        return "//"     # 小拓扑
+    elif hosts < 10:
+        return "\\"     # 中拓扑
+    else:
+        return "xx"     # 大拓扑
+
+df["hatch"] = df["hosts"].apply(get_hatch)
+
+# ======== 第四步：绘图并保存 ========
+fig, ax1 = plt.subplots(figsize=(14, 6))
+
+# 左轴：平均耗时柱状图（不同填充样式）
+bars = []
+for _, row in df.iterrows():
+    bar = ax1.bar(
+        row["intent_id"],
+        row["avg_time"],
+        color="white",
+        edgecolor="black",
+        hatch=row["hatch"],
+        linewidth=1.0
+    )
+    bars.append(bar)
+
+ax1.set_xlabel("意图编号", fontsize=12)
+ax1.set_ylabel("平均执行时间 (秒)", fontsize=12)
+ax1.tick_params(axis="y", labelsize=10)
+ax1.set_ylim(0, df["avg_time"].max() * 1.2)
+ax1.grid(axis="y", linestyle="--", alpha=0.6)
+
+# 在柱子上标注数值
+for bar_group in bars:
+    bar = bar_group[0]
+    height = bar.get_height()
+    ax1.text(
+        bar.get_x() + bar.get_width() / 2,
+        height + 0.3,
+        f"{height:.1f}",
+        ha="center",
+        va="bottom",
+        fontsize=9,
+        color="black"
+    )
+
+# 右轴：成功率折线图（实线+标记）
+ax2 = ax1.twinx()
+ax2.plot(
+    df["intent_id"],
+    df["success_rate"],
+    color="black",
+    marker="o",
+    linestyle="-",
+    linewidth=1.5,
+    markersize=6
+)
+ax2.set_ylabel("执行成功率 (%)", fontsize=12)
+ax2.tick_params(axis="y", labelsize=10)
+ax2.set_ylim(0, 110)
+
+# X 轴标签
+plt.xticks(ticks=df["intent_id"], labels=df["intent_id"], fontsize=10)
+
+# 图例（使用不同填充样式区分拓扑规模）
+legend_elements = [
+    Patch(facecolor='white', edgecolor='black', hatch='//', label='小型拓扑 (主机数 < 4)'),
+    Patch(facecolor='white', edgecolor='black', hatch='\\', label='中型拓扑 (4 ≤ 主机数 < 10)'),
+    Patch(facecolor='white', edgecolor='black', hatch='xx', label='大型拓扑 (主机数 ≥ 10)'),
+    Patch(facecolor='white', edgecolor='black', label='平均执行时间（柱）'),
+    Line2D([0], [0], color='black', marker='o', linestyle='-', linewidth=1.5, markersize=5, label='执行成功率（线）')
+]
+plt.legend(
+    handles=legend_elements,
+    loc="upper left",
+    bbox_to_anchor=(1.16, 1.0),
+    fontsize=10
+)
+
+# 图标题
+plt.title("不同拓扑规模下的意图执行时间与成功率", fontsize=14)
+
+# 布局与保存
+plt.tight_layout(rect=[0, 0, 0.82, 1])
+output_path = os.path.join(latest_dir, "intent_time_success_bw.png")
+plt.savefig(output_path, dpi=300, bbox_inches="tight")
+print(f"✅ 图表已保存至: {output_path}")
+
 # 文件路径: ./test/test_intents.py
 
 import os
@@ -4465,7 +4534,7 @@ from datetime import datetime
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 INTENT_FILE = os.path.join(BASE_DIR, "intent.txt")
 LOG_PATH_FILE = os.path.join(BASE_DIR, "../tmp/intent_log_path.txt")
-RESULT_BASE_DIR = os.path.join(BASE_DIR, "../result")
+RESULT_BASE_DIR = os.path.join(BASE_DIR, "result")
 API_INTENT_URL = "http://localhost:5000/intent"
 API_CLEANUP_URL = "http://localhost:5000/cleanup"
 POLL_INTERVAL = 1
@@ -4509,6 +4578,7 @@ def cleanup_topology():
         response = requests.post(API_CLEANUP_URL)
         if response.status_code == 200:
             print("[CLEANUP] 拓扑清理完成。")
+            time.sleep(5)
         else:
             print(f"[CLEANUP] 清理失败: {response.status_code}")
     except Exception as e:
@@ -4571,6 +4641,139 @@ if __name__ == "__main__":
     main()
 
 
+# 文件路径: ./test/result/intent_test_20250808_1424/plot_steps_time_bw.py
+#生成执行时间和意图拆解步骤数的散点图
+import pandas as pd
+import matplotlib
+import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
+
+# ======== 字体设置（使用服务器指定字体路径） ========
+# ======== 中文字体（宋体） ========
+cn_font_path = "/usr/share/fonts/truetype/arphic-gbsn00lp/gbsn00lp.ttf"
+fm.fontManager.addfont(cn_font_path)
+cn_prop = fm.FontProperties(fname=cn_font_path)
+
+# ======== 英文字体（Times New Roman） ========
+tnr_font_path = "/data/gjw/Times New Roman.ttf"
+fm.fontManager.addfont(tnr_font_path)
+tnr_prop = fm.FontProperties(fname=tnr_font_path)
+
+# ======== 字体回退顺序 ========
+# 中文字符优先用宋体，英文/数字自动回退到 Times New Roman
+matplotlib.rcParams['font.family'] = [
+    cn_prop.get_name(),
+    tnr_prop.get_name()
+]
+
+# 负号正常显示
+matplotlib.rcParams['axes.unicode_minus'] = False
+# ======== 图中文字字号（正文 11 号，对应下调） ========
+matplotlib.rcParams.update({
+    "font.size": 9.5,        # 图内默认字号（整体 < 正文）
+    "axes.titlesize": 10,    # 图标题
+    "axes.labelsize": 9.5,   # 坐标轴标题
+    "xtick.labelsize": 9,    # x 轴刻度
+    "ytick.labelsize": 9,    # y 轴刻度
+    "legend.fontsize": 9,    # 图例
+})
+
+# ======== 数据读取 ========
+csv_path = "intent_data_processed.csv"
+df = pd.read_csv(csv_path)
+
+# 确保数值类型正确
+df["steps"] = pd.to_numeric(df["steps"], errors="coerce")
+df["avg_time"] = pd.to_numeric(df["avg_time"], errors="coerce")
+df["hosts"] = pd.to_numeric(df["hosts"], errors="coerce")
+df = df.dropna(subset=["steps", "avg_time", "hosts"])
+
+
+# ======== 拓扑规模分类 ========
+def topo_class(hosts):
+    if hosts < 4:
+        return "小型拓扑"
+    elif hosts < 10:
+        return "中型拓扑"
+    else:
+        return "大型拓扑"
+
+
+df["topology"] = df["hosts"].apply(topo_class)
+
+# ======== 形状映射（黑白） ========
+marker_map = {
+    "小型拓扑": "o",   # 圆形
+    "中型拓扑": "s",   # 方形
+    "大型拓扑": "^",   # 三角形
+}
+
+# ======== 绘图 ========
+fig, ax = plt.subplots(figsize=(6.5, 4.2))
+
+for topo, marker in marker_map.items():
+    sub = df[df["topology"] == topo]
+    if sub.empty:
+        continue
+    ax.scatter(
+        sub["steps"],
+        sub["avg_time"],
+        marker=marker,
+        s=55,
+        facecolors="none",   # 空心点，黑白友好
+        edgecolors="black",
+        linewidths=1.1,
+        label=topo
+    )
+
+# ======== 坐标轴与图例 ========
+ax.set_xlabel("意图拆解步骤数")
+ax.set_ylabel("平均执行时间（秒）")
+ax.set_title("任务复杂度与意图执行时间关系")
+
+# 横轴只显示实际出现过的 steps（离散）
+step_ticks = sorted(df["steps"].astype(int).unique())
+ax.set_xticks(step_ticks)
+
+# 网格（淡灰虚线，不抢视觉）
+ax.grid(True, linestyle="--", linewidth=0.6, alpha=0.5)
+
+# 图例（中文）
+ax.legend(frameon=True)
+
+plt.tight_layout()
+plt.savefig("steps_vs_time_bw_scatter.png", dpi=300)
+print("中文字体名:", cn_prop.get_name())
+print("英文字体名:", tnr_prop.get_name())
+
+
+# 文件路径: ./test/tmp_result/merge.py
+import pandas as pd
+
+# 读取两个实验数据文件
+df1 = pd.read_csv("r1.csv")
+df2 = pd.read_csv("r2.csv")
+
+# 校验列结构
+if not df1.columns.equals(df2.columns):
+    raise ValueError("两个CSV文件的列结构不一致！")
+
+# 假设“轮次”列名为 '轮次'，将 r2 的轮次偏移 +5
+df2 = df2.copy()
+df2["轮次"] = df2["轮次"] + 5
+
+# 合并两个 DataFrame
+merged_df = pd.concat([df1, df2], ignore_index=True)
+
+# 按编号和轮次排序（可选）
+merged_df = merged_df.sort_values(by=["编号", "轮次"]).reset_index(drop=True)
+
+# 保存合并结果
+merged_df.to_csv("merged_result.csv", index=False, encoding="utf-8-sig")
+
+print("✅ 合并完成，结果保存为 merged_result.csv")
+
+
 # 文件路径: ./test/result2/exp2.txt
 测试h1和h2之间的通信，若不通请修复
 测试h1和h11之间的通信，若不通请修复
@@ -4594,12 +4797,93 @@ if __name__ == "__main__":
 测试h62和h63是否可以通信，若不通请修复
 
 # 文件路径: ./test/result2/exp2_proccessed.py
+# import pandas as pd
+
+# # === 1. 加载原始数据 ===
+# df = pd.read_csv("exp2.csv")  # 替换为你的实际路径，如 "./result2/exp2.csv"
+
+# # === 2. 转换布尔字段（如为字符串） ===
+# bool_cols = ["repair_triggered", "is_ping_success_before", "repair_success", "final_result"]
+# for col in bool_cols:
+#     df[col] = df[col].astype(str).str.lower().map({"true": True, "false": False})
+
+# # === 3. 添加 need_repair 字段（intent_id 1-10） ===
+# df["need_repair"] = df["intent_id"] <= 10
+
+# # === 4. 计算每轮的 intent_result 字段 ===
+# def compute_intent_result(row):
+#     if row["intent_id"] <= 10:
+#         return (
+#             row["is_ping_success_before"] is False
+#             and row["repair_triggered"] is True
+#             and row["final_result"] is True
+#         )
+#     else:
+#         return (
+#             row["is_ping_success_before"] is True
+#             and row["repair_triggered"] is False
+#             and row["final_result"] is True
+#         )
+
+# df["intent_result"] = df.apply(compute_intent_result, axis=1)
+
+# # === 5. 聚合处理，计算 repair_triggered_rate、intent_result_rate、avg_time ===
+# grouped = df.groupby(["intent_id", "host_pair"]).agg({
+#     "need_repair": "first",
+#     "repair_triggered": "mean",
+#     "intent_result": "mean",
+#     "total_time": "mean"
+# }).reset_index()
+
+# # === 6. 对 intent_id > 10 的行修正 repair_triggered_rate = -1 ===
+# grouped.loc[grouped["intent_id"] > 10, "repair_triggered"] = -1
+
+# # === 7. 重命名字段 ===
+# processed = grouped.rename(columns={
+#     "repair_triggered": "repair_triggered_rate",
+#     "intent_result": "intent_result_rate",
+#     "total_time": "avg_time"
+# })
+
+# # === 8. 保存到 CSV 文件 ===
+# processed.to_csv("exp2_processed.csv", index=False)
+# print("✅ 处理完成，文件已保存为 exp2_processed.csv")
+
 import pandas as pd
+import os
+import glob
+
+# === 0. 自动定位最新创建的 result2/exp2_test_* 文件夹 ===
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# RESULT_DIR = os.path.join(BASE_DIR, "result2")
+RESULT_DIR = BASE_DIR
+
+# 找到所有 exp2_test_* 子目录
+subdirs = [
+    os.path.join(RESULT_DIR, d)
+    for d in os.listdir(RESULT_DIR)
+    if d.startswith("exp2_test_") and os.path.isdir(os.path.join(RESULT_DIR, d))
+]
+
+if not subdirs:
+    raise RuntimeError("❌ 未找到任何 exp2_test_* 目录")
+
+latest_dir = max(subdirs, key=os.path.getmtime)
+print(f"✅ 最新结果文件夹为: {latest_dir}")
+
+# 查找该目录下的 exp2_*.csv 文件
+csv_files = glob.glob(os.path.join(latest_dir, "exp2_*.csv"))
+if not csv_files:
+    raise RuntimeError("❌ 未找到 exp2_*.csv 文件")
+
+input_path = csv_files[0]
+output_path = os.path.join(latest_dir, "exp2_processed.csv")
+print(f"✅ 读取数据: {input_path}")
 
 # === 1. 加载原始数据 ===
-df = pd.read_csv("exp2.csv")  # 替换为你的实际路径，如 "./result2/exp2.csv"
+df = pd.read_csv(input_path)
 
-# === 2. 转换布尔字段（如为字符串） ===
+# === 2. 转换布尔字段 ===
 bool_cols = ["repair_triggered", "is_ping_success_before", "repair_success", "final_result"]
 for col in bool_cols:
     df[col] = df[col].astype(str).str.lower().map({"true": True, "false": False})
@@ -4624,7 +4908,7 @@ def compute_intent_result(row):
 
 df["intent_result"] = df.apply(compute_intent_result, axis=1)
 
-# === 5. 聚合处理，计算 repair_triggered_rate、intent_result_rate、avg_time ===
+# === 5. 聚合处理 ===
 grouped = df.groupby(["intent_id", "host_pair"]).agg({
     "need_repair": "first",
     "repair_triggered": "mean",
@@ -4632,27 +4916,50 @@ grouped = df.groupby(["intent_id", "host_pair"]).agg({
     "total_time": "mean"
 }).reset_index()
 
-# === 6. 对 intent_id > 10 的行修正 repair_triggered_rate = -1 ===
+# === 6. 修正 repair_triggered_rate ===
 grouped.loc[grouped["intent_id"] > 10, "repair_triggered"] = -1
 
-# === 7. 重命名字段 ===
+# === 7. 重命名列 ===
 processed = grouped.rename(columns={
     "repair_triggered": "repair_triggered_rate",
     "intent_result": "intent_result_rate",
     "total_time": "avg_time"
 })
 
-# === 8. 保存到 CSV 文件 ===
-processed.to_csv("exp2_processed.csv", index=False)
-print("✅ 处理完成，文件已保存为 exp2_processed.csv")
+# === 8. 保存处理结果 ===
+processed.to_csv(output_path, index=False)
+print(f"🎉 处理完成，结果保存为: {output_path}")
 
 
 # 文件路径: ./test/result2/plot_exp2_avg_time_grouped.py
+# 修复意图与无需修复意图执行平均时间对比图
 import pandas as pd
 import matplotlib.pyplot as plt
+import os
+import glob
+
+# === 0. 自动查找最新 result2/exp2_test_* 文件夹 ===
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# RESULT_DIR = os.path.join(BASE_DIR, "result2")
+RESULT_DIR = BASE_DIR
+
+subdirs = [
+    os.path.join(RESULT_DIR, d)
+    for d in os.listdir(RESULT_DIR)
+    if d.startswith("exp2_test_") and os.path.isdir(os.path.join(RESULT_DIR, d))
+]
+
+if not subdirs:
+    raise RuntimeError("❌ 未找到任何 exp2_test_* 文件夹")
+
+latest_dir = max(subdirs, key=os.path.getmtime)
+print(f"✅ 最新实验目录为: {latest_dir}")
 
 # === 1. 读取处理后的数据 ===
-df = pd.read_csv("exp2_processed.csv")  # 替换为你的路径
+csv_path = os.path.join(latest_dir, "exp2_processed.csv")
+if not os.path.exists(csv_path):
+    raise RuntimeError("❌ 未找到 exp2_processed.csv 文件")
+df = pd.read_csv(csv_path)
 
 # === 2. 添加分类字段 ===
 df["group"] = df["need_repair"].map({True: "Need Repair", False: "No Repair"})
@@ -4676,9 +4983,7 @@ for bar in bars:
 # === 7. 图表设置 ===
 ax.set_ylabel("Average Execution Time (seconds)", fontsize=12)
 ax.set_title("Average Execution Time: Repair vs No Repair", fontsize=14)
-# ax.set_ylim(0, max(grouped_avg["avg_time"]) * 1.3)
-ax.set_ylim(20, 26)  # 你可以根据数据具体调，比如 17 到 28，更聚焦差异
-
+ax.set_ylim(20, 26)  # 可调节显示范围
 
 # === 8. 去掉多余边框 ===
 ax.spines['right'].set_visible(False)
@@ -4686,18 +4991,153 @@ ax.spines['top'].set_visible(False)
 
 # === 9. 保存图像 ===
 plt.tight_layout()
-plt.savefig("exp2_avg_time_grouped.png", dpi=300)
-# plt.show()  # 调试时打开
+output_path = os.path.join(latest_dir, "exp2_avg_time_grouped.png")
+plt.savefig(output_path, dpi=300)
+print(f"📊 图像已保存至: {output_path}")
 
+
+# 文件路径: ./test/result2/plot_exp2_avg_time_grouped_bw.py
+# ======== 实验2：修复意图与无需修复意图执行平均时间对比图（黑白打印 + 中文） ========
+import pandas as pd
+import matplotlib.pyplot as plt
+import os
+import matplotlib.font_manager as fm
+import matplotlib
+from matplotlib.patches import Patch
+
+# ======== 字体设置（服务器宋体） ========
+font_path = "/usr/share/fonts/truetype/arphic-gbsn00lp/gbsn00lp.ttf"  # 文鼎PL简报宋
+fm.fontManager.addfont(font_path)
+prop = fm.FontProperties(fname=font_path)
+matplotlib.rcParams['font.family'] = prop.get_name()
+matplotlib.rcParams['axes.unicode_minus'] = False
+
+# ======== 0. 自动查找最新 exp2_test_* 文件夹 ========
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+RESULT_DIR = BASE_DIR
+
+subdirs = [
+    os.path.join(RESULT_DIR, d)
+    for d in os.listdir(RESULT_DIR)
+    if d.startswith("exp2_test_") and os.path.isdir(os.path.join(RESULT_DIR, d))
+]
+
+if not subdirs:
+    raise RuntimeError("❌ 未找到任何 exp2_test_* 文件夹")
+
+latest_dir = max(subdirs, key=os.path.getmtime)
+print(f"✅ 最新实验目录为: {latest_dir}")
+
+# ======== 1. 读取处理后的数据 ========
+csv_path = os.path.join(latest_dir, "exp2_processed.csv")
+if not os.path.exists(csv_path):
+    raise RuntimeError("❌ 未找到 exp2_processed.csv 文件")
+df = pd.read_csv(csv_path)
+
+# ======== 2. 添加分类字段 ========
+df["group"] = df["need_repair"].map({True: "需修复意图", False: "无需修复意图"})
+
+# ======== 3. 按分类计算平均耗时 ========
+grouped_avg = df.groupby("group")["avg_time"].mean().reset_index()
+
+# ======== 4. 分配填充样式（黑白区分） ========
+def get_hatch(group_name):
+    return "xx" if "需修复" in group_name else "//"
+
+grouped_avg["hatch"] = grouped_avg["group"].apply(get_hatch)
+
+# ======== 5. 绘图 ========
+fig, ax = plt.subplots(figsize=(8, 5))
+bars = []
+x_pos = range(len(grouped_avg))
+
+for i, row in enumerate(grouped_avg.itertuples()):
+    bar = ax.bar(
+        i,
+        row.avg_time,
+        color="white",
+        edgecolor="black",
+        hatch=row.hatch,
+        linewidth=1.0,
+        width=0.5
+    )
+    bars.append(bar)
+
+# ======== 6. 添加柱顶标签 ========
+for i, row in enumerate(grouped_avg.itertuples()):
+    ax.text(
+        i,
+        row.avg_time + 0.2,
+        f"{row.avg_time:.1f} s",
+        ha="center",
+        va="bottom",
+        fontsize=10,
+        fontproperties=prop
+    )
+
+# ======== 7. 坐标轴与标题 ========
+ax.set_xticks(x_pos)
+ax.set_xticklabels(grouped_avg["group"], fontproperties=prop, fontsize=11)
+ax.set_ylabel("平均执行时间（秒）", fontsize=12, fontproperties=prop)
+# ax.set_title("实验2：修复意图与无需修复意图的平均执行时间对比", fontsize=14, fontproperties=prop)
+ax.set_ylim(grouped_avg["avg_time"].min() * 0.9, grouped_avg["avg_time"].max() * 1.15)
+
+# ======== 8. 图例 ========
+legend_elements = [
+    Patch(facecolor='white', edgecolor='black', hatch='xx', label='需修复意图'),
+    Patch(facecolor='white', edgecolor='black', hatch='//', label='无需修复意图')
+]
+ax.legend(
+    handles=legend_elements,
+    loc="upper right",
+    prop=prop,
+    fontsize=10
+)
+
+# ======== 9. 样式调整 ========
+ax.spines['right'].set_visible(False)
+ax.spines['top'].set_visible(False)
+ax.grid(axis="y", linestyle="--", alpha=0.6)
+
+# ======== 10. 保存图像 ========
+plt.tight_layout()
+output_path = os.path.join(latest_dir, "exp2_avg_time_grouped_bw.png")
+plt.savefig(output_path, dpi=300, bbox_inches="tight")
+plt.close()
+
+print(f"✅ 图表已保存至: {output_path}")
 
 # 文件路径: ./test/result2/plot_exp2_intent_result_rate.py
+# 实验2修复意图执行成功率柱状图
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mtick
 from matplotlib.patches import Patch
+import os
+
+# === 0. 自动查找最新 result2/exp2_test_* 文件夹 ===
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# RESULT_DIR = os.path.join(BASE_DIR, "result2")
+RESULT_DIR = BASE_DIR
+
+# 找所有符合命名规则的子目录
+subdirs = [
+    os.path.join(RESULT_DIR, d)
+    for d in os.listdir(RESULT_DIR)
+    if d.startswith("exp2_test_") and os.path.isdir(os.path.join(RESULT_DIR, d))
+]
+
+if not subdirs:
+    raise RuntimeError("❌ 未找到任何 exp2_test_* 文件夹")
+
+latest_dir = max(subdirs, key=os.path.getmtime)
+print(f"✅ 最新实验目录为: {latest_dir}")
 
 # === 1. 读取处理后的数据 ===
-df = pd.read_csv("exp2_processed.csv")  # 替换为你的路径
+csv_path = os.path.join(latest_dir, "exp2_processed.csv")
+if not os.path.exists(csv_path):
+    raise RuntimeError("❌ 未找到 exp2_processed.csv 文件")
+df = pd.read_csv(csv_path)
 
 # === 2. 颜色设定：红色 = 需要修复，灰色 = 不应修复 ===
 colors = ["firebrick" if need else "lightgray" for need in df["need_repair"]]
@@ -4735,20 +5175,160 @@ ax.legend(handles=legend_elements)
 
 # === 9. 保存图像 ===
 plt.tight_layout()
-plt.savefig("exp2_intent_result_rate.png", dpi=300)
-# plt.show()  # 调试用
+output_path = os.path.join(latest_dir, "exp2_intent_result_rate.png")
+plt.savefig(output_path, dpi=300)
+print(f"📊 图像已保存至: {output_path}")
 
 
-# 文件路径: ./test/result2/plot_exp2_repair_rate.py
+# 文件路径: ./test/result2/plot_exp2_intent_result_rate_bw.py
+# ======== 实验2：修复意图执行成功率柱状图（黑白打印 + 中文） ========
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mtick
 from matplotlib.patches import Patch
+import os
+import matplotlib.font_manager as fm
+import matplotlib
+
+# ======== 字体设置（服务器本地宋体路径） ========
+font_path = "/usr/share/fonts/truetype/arphic-gbsn00lp/gbsn00lp.ttf"  # 文鼎PL简报宋
+fm.fontManager.addfont(font_path)
+prop = fm.FontProperties(fname=font_path)
+matplotlib.rcParams['font.family'] = prop.get_name()
+matplotlib.rcParams['axes.unicode_minus'] = False
+
+# ======== 0. 自动查找最新 exp2_test_* 文件夹 ========
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+RESULT_DIR = BASE_DIR
+
+subdirs = [
+    os.path.join(RESULT_DIR, d)
+    for d in os.listdir(RESULT_DIR)
+    if d.startswith("exp2_test_") and os.path.isdir(os.path.join(RESULT_DIR, d))
+]
+
+if not subdirs:
+    raise RuntimeError("❌ 未找到任何 exp2_test_* 文件夹")
+
+latest_dir = max(subdirs, key=os.path.getmtime)
+print(f"✅ 最新实验目录为: {latest_dir}")
+
+# ======== 1. 读取处理后的数据 ========
+csv_path = os.path.join(latest_dir, "exp2_processed.csv")
+if not os.path.exists(csv_path):
+    raise RuntimeError("❌ 未找到 exp2_processed.csv 文件")
+df = pd.read_csv(csv_path)
+
+# ======== 2. 分配填充样式（黑白区分） ========
+def get_hatch(need_repair):
+    return "xx" if need_repair else "//"
+
+df["hatch"] = df["need_repair"].apply(get_hatch)
+
+# ======== 3. 绘图 ========
+fig, ax = plt.subplots(figsize=(12, 6))
+
+bars = []
+x_pos = range(len(df))
+for i, row in enumerate(df.itertuples()):
+    bar = ax.bar(
+        i,
+        row.intent_result_rate,
+        color="white",
+        edgecolor="black",
+        hatch=row.hatch,
+        linewidth=1.0
+    )
+    bars.append(bar)
+
+# ======== 4. 设置 Y 轴为百分比格式 ========
+ax.yaxis.set_major_formatter(mtick.PercentFormatter(xmax=1.0))
+ax.set_ylim(0, 1.2)
+
+# ======== 5. 在柱顶添加百分比文字标签 ========
+for i, row in enumerate(df.itertuples()):
+    val = row.intent_result_rate
+    ax.text(
+        i,
+        val + 0.02,
+        f"{int(val * 100)}%",
+        ha="center",
+        va="bottom",
+        fontsize=9,
+        fontproperties=prop
+    )
+
+# ======== 6. 添加分割线与说明文字 ========
+ax.axvline(x=9.5, color="gray", linestyle="--")
+ax.text(
+    9.7, 1.05,
+    "意图 11–20：无需修复",
+    color="gray",
+    fontsize=10,
+    fontproperties=prop
+)
+
+# ======== 7. 坐标轴与标题 ========
+ax.set_xlabel("意图编号", fontsize=12, fontproperties=prop)
+ax.set_ylabel("执行成功率", fontsize=12, fontproperties=prop)
+# ax.set_title("实验2：修复后意图执行成功率", fontsize=14, fontproperties=prop)
+ax.set_xticks(x_pos)
+ax.set_xticklabels(df["intent_id"], fontproperties=prop, fontsize=10)
+ax.grid(axis="y", linestyle="--", alpha=0.6)
+
+# ======== 8. 图例（黑白填充样式） ========
+legend_elements = [
+    Patch(facecolor='white', edgecolor='black', hatch='xx', label='需修复意图'),
+    Patch(facecolor='white', edgecolor='black', hatch='//', label='无需修复意图')
+]
+ax.legend(
+    handles=legend_elements,
+    loc="upper left",
+    bbox_to_anchor=(1.02, 1.0),
+    prop=prop,
+    fontsize=10
+)
+
+# ======== 9. 保存图像 ========
+plt.tight_layout(rect=[0, 0, 0.85, 1])
+output_path = os.path.join(latest_dir, "exp2_intent_result_rate_bw.png")
+plt.savefig(output_path, dpi=300, bbox_inches="tight")
+plt.close()
+
+print(f"✅ 图表已保存至: {output_path}")
+
+# 文件路径: ./test/result2/plot_exp2_repair_rate.py
+#修复动作触发成功率柱状图
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mtick
+from matplotlib.patches import Patch
+import os
+
+# === 0. 自动查找最新 result2/exp2_test_* 文件夹 ===
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# RESULT_DIR = os.path.join(BASE_DIR, "result2")
+RESULT_DIR = BASE_DIR
+
+subdirs = [
+    os.path.join(RESULT_DIR, d)
+    for d in os.listdir(RESULT_DIR)
+    if d.startswith("exp2_test_") and os.path.isdir(os.path.join(RESULT_DIR, d))
+]
+
+if not subdirs:
+    raise RuntimeError("❌ 未找到任何 exp2_test_* 文件夹")
+
+latest_dir = max(subdirs, key=os.path.getmtime)
+print(f"✅ 最新实验目录为: {latest_dir}")
 
 # === 1. 读取处理后的数据 ===
-df = pd.read_csv("exp2_processed.csv")  # 修改为你的路径
+csv_path = os.path.join(latest_dir, "exp2_processed.csv")
+if not os.path.exists(csv_path):
+    raise RuntimeError("❌ 未找到 exp2_processed.csv 文件")
+df = pd.read_csv(csv_path)
 
-# === 2. 将 repair_triggered_rate = -1 改为 0（不触发修复）===
+# === 2. 将 repair_triggered_rate = -1 改为 0.0（不触发修复）===
 df.loc[df["repair_triggered_rate"] < 0, "repair_triggered_rate"] = 0.0
 
 # === 3. 设置颜色：红色 = 应修复，灰色 = 不应修复 ===
@@ -4757,59 +5337,201 @@ colors = ["firebrick" if need else "lightgray" for need in df["need_repair"]]
 # === 4. 创建图表 ===
 fig, ax = plt.subplots(figsize=(12, 6))
 bars = ax.bar(df["intent_id"], df["repair_triggered_rate"], color=colors)
-# === 在每根柱子上方加标签（显示百分比）===
+
+# === 5. 每根柱子上加百分比标签 ===
 for bar, val in zip(bars, df["repair_triggered_rate"]):
     height = bar.get_height()
     ax.text(bar.get_x() + bar.get_width() / 2, height + 0.02,
             f"{int(val * 100)}%", ha="center", va="bottom", fontsize=9)
 
-
-# === 5. 设置纵坐标为百分比格式 ===
+# === 6. 设置纵坐标为百分比格式 ===
 ax.yaxis.set_major_formatter(mtick.PercentFormatter(xmax=1.0))
 
-# === 6. 添加灰色分割线 & 注释 ===
+# === 7. 添加灰色分割线与说明文字 ===
 ax.axvline(x=10.5, color="gray", linestyle="--")
 ax.text(10.6, 1.05, "Intent 11–20 (should not trigger repair)", color="gray", fontsize=10)
 
-# === 7. 图表样式设置 ===
+# === 8. 图表样式设置 ===
 ax.set_xlabel("Intent ID", fontsize=12)
 ax.set_ylabel("Repair Triggered Rate", fontsize=12)
 ax.set_title("Repair Triggered Rate per Intent", fontsize=14)
 ax.set_xticks(df["intent_id"])
 ax.set_ylim(0, 1.2)
 
-# === 8. 图例 ===
+# === 9. 图例 ===
 legend_elements = [
     Patch(facecolor="firebrick", label="Need Repair"),
     Patch(facecolor="lightgray", label="No Repair Needed")
 ]
 ax.legend(handles=legend_elements)
 
-# === 9. 保存图像 ===
+# === 10. 保存图像 ===
 plt.tight_layout()
-plt.savefig("exp2_repair_triggered_rate.png", dpi=300)
-# plt.show()  # 可用于调试
+output_path = os.path.join(latest_dir, "exp2_repair_triggered_rate.png")
+plt.savefig(output_path, dpi=300)
+print(f"📊 图像已保存至: {output_path}")
 
+
+# 文件路径: ./test/result2/plot_exp2_repair_rate_bw.py
+# ======== 实验2：修复动作触发成功率柱状图（黑白打印 + 中文） ========
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mtick
+from matplotlib.patches import Patch
+import os
+import matplotlib.font_manager as fm
+import matplotlib
+
+# ======== 字体设置（使用服务器本地宋体路径） ========
+font_path = "/usr/share/fonts/truetype/arphic-gbsn00lp/gbsn00lp.ttf"  # 文鼎PL简报宋
+fm.fontManager.addfont(font_path)
+prop = fm.FontProperties(fname=font_path)
+matplotlib.rcParams['font.family'] = prop.get_name()
+matplotlib.rcParams['axes.unicode_minus'] = False
+
+# ======== 0. 自动查找最新 exp2_test_* 文件夹 ========
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+RESULT_DIR = BASE_DIR
+
+subdirs = [
+    os.path.join(RESULT_DIR, d)
+    for d in os.listdir(RESULT_DIR)
+    if d.startswith("exp2_test_") and os.path.isdir(os.path.join(RESULT_DIR, d))
+]
+
+if not subdirs:
+    raise RuntimeError("❌ 未找到任何 exp2_test_* 文件夹")
+
+latest_dir = max(subdirs, key=os.path.getmtime)
+print(f"✅ 最新实验目录为: {latest_dir}")
+
+# ======== 1. 读取处理后的数据 ========
+csv_path = os.path.join(latest_dir, "exp2_processed.csv")
+if not os.path.exists(csv_path):
+    raise RuntimeError("❌ 未找到 exp2_processed.csv 文件")
+df = pd.read_csv(csv_path)
+
+# ======== 2. 将 repair_triggered_rate = -1 改为 0.0（未触发修复） ========
+df.loc[df["repair_triggered_rate"] < 0, "repair_triggered_rate"] = 0.0
+
+# ======== 3. 分配填充样式（黑白可区分） ========
+def get_hatch(need_repair):
+    return "xx" if need_repair else "//"
+
+df["hatch"] = df["need_repair"].apply(get_hatch)
+
+# ======== 4. 绘图 ========
+fig, ax = plt.subplots(figsize=(12, 6))
+
+bars = []
+x_pos = range(len(df))
+for i, row in enumerate(df.itertuples()):
+    bar = ax.bar(
+        i,
+        row.repair_triggered_rate,
+        color="white",
+        edgecolor="black",
+        hatch=row.hatch,
+        linewidth=1.0
+    )
+    bars.append(bar)
+
+# ======== 5. 添加百分比标签 ========
+for i, row in enumerate(df.itertuples()):
+    val = row.repair_triggered_rate
+    ax.text(
+        i,
+        val + 0.02,
+        f"{int(val * 100)}%",
+        ha="center",
+        va="bottom",
+        fontsize=9,
+        fontproperties=prop
+    )
+
+# ======== 6. 设置纵坐标为百分比格式 ========
+ax.yaxis.set_major_formatter(mtick.PercentFormatter(xmax=1.0))
+ax.set_ylim(0, 1.2)
+
+# ======== 7. 分隔线与说明文字 ========
+ax.axvline(x=9.5, color="gray", linestyle="--")  # 假设前10条是需修复
+ax.text(
+    9.7, 1.05, "意图 11–20：无需触发修复",
+    color="gray", fontsize=10, fontproperties=prop
+)
+
+# ======== 8. 坐标轴与标题 ========
+ax.set_xlabel("意图编号", fontsize=12, fontproperties=prop)
+ax.set_ylabel("修复触发成功率", fontsize=12, fontproperties=prop)
+# ax.set_title("实验2：不同意图的修复动作触发成功率", fontsize=14, fontproperties=prop)
+ax.set_xticks(x_pos)
+ax.set_xticklabels(df["intent_id"], fontproperties=prop, fontsize=10)
+ax.grid(axis="y", linestyle="--", alpha=0.6)
+
+# ======== 9. 图例（用不同填充线区分） ========
+legend_elements = [
+    Patch(facecolor='white', edgecolor='black', hatch='xx', label='应触发修复'),
+    Patch(facecolor='white', edgecolor='black', hatch='//', label='无需修复')
+]
+ax.legend(
+    handles=legend_elements,
+    loc="upper left",
+    bbox_to_anchor=(1.02, 1.0),
+    prop=prop,
+    fontsize=10
+)
+
+# ======== 10. 保存图像 ========
+plt.tight_layout(rect=[0, 0, 0.85, 1])
+output_path = os.path.join(latest_dir, "exp2_repair_triggered_rate_bw.png")
+plt.savefig(output_path, dpi=300, bbox_inches="tight")
+plt.close()
+
+print(f"✅ 图表已保存至: {output_path}")
 
 # 文件路径: ./test/result2/plot_exp2_time_boxplot.py
+# 修复意图与无需修复意图箱线图
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
+import os
+import glob
 
-# === 1. 读取原始每轮数据（非 processed） ===
-df = pd.read_csv("exp2.csv")  # 修改为你的实际路径
+# === 0. 自动查找最新 result2/exp2_test_* 文件夹 ===
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# RESULT_DIR = os.path.join(BASE_DIR, "result2")
+RESULT_DIR = BASE_DIR
+
+subdirs = [
+    os.path.join(RESULT_DIR, d)
+    for d in os.listdir(RESULT_DIR)
+    if d.startswith("exp2_test_") and os.path.isdir(os.path.join(RESULT_DIR, d))
+]
+
+if not subdirs:
+    raise RuntimeError("❌ 未找到任何 exp2_test_* 文件夹")
+
+latest_dir = max(subdirs, key=os.path.getmtime)
+print(f"✅ 最新实验目录为: {latest_dir}")
+
+# === 1. 查找并读取原始 exp2_*.csv 文件（非 processed）===
+csv_files = glob.glob(os.path.join(latest_dir, "exp2_*.csv"))
+if not csv_files:
+    raise RuntimeError("❌ 未找到 exp2_*.csv 文件")
+
+raw_path = csv_files[0]
+df = pd.read_csv(raw_path)
 
 # === 2. 类型转换（确保 total_time 为 float）===
 df["total_time"] = pd.to_numeric(df["total_time"], errors="coerce")
 
-# === 3. 设置颜色（根据 need_repair 分类）===
+# === 3. 设置颜色 ===
 df["need_repair"] = df["intent_id"] <= 10
-colors = ["firebrick" if need else "lightgray" for need in df.groupby("intent_id")["need_repair"].first()]
+colors = ["firebrick" if need else "lightgray"
+          for need in df.groupby("intent_id")["need_repair"].first()]
 
 # === 4. 创建箱线图 ===
 fig, ax = plt.subplots(figsize=(14, 6))
-
-# 箱线图数据结构：每个 intent_id 一组 total_time
 box_data = [df[df["intent_id"] == i]["total_time"].dropna() for i in range(1, 21)]
 box = ax.boxplot(box_data, patch_artist=True)
 
@@ -4819,16 +5541,17 @@ for patch, color in zip(box["boxes"], colors):
 for median in box["medians"]:
     median.set_color("black")
 
-# === 6. 添加图表信息 ===
+# === 6. 图表信息 ===
 ax.set_title("Intent Execution Time Distribution (Boxplot)", fontsize=14)
 ax.set_xlabel("Intent ID", fontsize=12)
 ax.set_ylabel("Total Execution Time (seconds)", fontsize=12)
 ax.set_xticks(range(1, 21))
 ax.set_xticklabels(range(1, 21))
 
-# 分割线标明 intent 11~20
+# 分割线
 ax.axvline(x=10.5, color="gray", linestyle="--")
-ax.text(10.6, ax.get_ylim()[1] * 0.95, "Intent 11–20 (No Repair Needed)", color="gray", fontsize=10)
+ax.text(10.6, ax.get_ylim()[1] * 0.95,
+        "Intent 11–20 (No Repair Needed)", color="gray", fontsize=10)
 
 # 图例
 legend_elements = [
@@ -4839,9 +5562,123 @@ ax.legend(handles=legend_elements)
 
 # === 7. 保存图像 ===
 plt.tight_layout()
-plt.savefig("exp2_time_boxplot.png", dpi=300)
-# plt.show()  # 可调试时使用
+output_path = os.path.join(latest_dir, "exp2_time_boxplot.png")
+plt.savefig(output_path, dpi=300)
+print(f"📊 图像已保存至: {output_path}")
 
+
+# 文件路径: ./test/result2/plot_exp2_time_boxplot_bw.py
+# ======== 实验2：修复意图与无需修复意图执行时间箱线图（黑白打印 + 中文） ========
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
+import os
+import glob
+import matplotlib.font_manager as fm
+import matplotlib
+
+# ======== 字体设置（服务器本地宋体） ========
+font_path = "/usr/share/fonts/truetype/arphic-gbsn00lp/gbsn00lp.ttf"  # 文鼎PL简报宋
+fm.fontManager.addfont(font_path)
+prop = fm.FontProperties(fname=font_path)
+matplotlib.rcParams['font.family'] = prop.get_name()
+matplotlib.rcParams['axes.unicode_minus'] = False
+
+# ======== 0. 自动查找最新 exp2_test_* 文件夹 ========
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+RESULT_DIR = BASE_DIR
+
+subdirs = [
+    os.path.join(RESULT_DIR, d)
+    for d in os.listdir(RESULT_DIR)
+    if d.startswith("exp2_test_") and os.path.isdir(os.path.join(RESULT_DIR, d))
+]
+
+if not subdirs:
+    raise RuntimeError("❌ 未找到任何 exp2_test_* 文件夹")
+
+latest_dir = max(subdirs, key=os.path.getmtime)
+print(f"✅ 最新实验目录为: {latest_dir}")
+
+# ======== 1. 查找并读取原始 exp2_*.csv 文件（非 processed） ========
+csv_files = glob.glob(os.path.join(latest_dir, "exp2_*.csv"))
+if not csv_files:
+    raise RuntimeError("❌ 未找到 exp2_*.csv 文件")
+
+raw_path = csv_files[0]
+df = pd.read_csv(raw_path)
+
+# ======== 2. 类型转换 ========
+df["total_time"] = pd.to_numeric(df["total_time"], errors="coerce")
+
+# ======== 3. 分类字段（前10个为需修复意图） ========
+df["need_repair"] = df["intent_id"] <= 10
+
+# ======== 4. 定义填充样式（黑白区分） ========
+hatches = ["xx" if need else "//" for need in df.groupby("intent_id")["need_repair"].first()]
+
+# ======== 5. 绘制箱线图 ========
+fig, ax = plt.subplots(figsize=(14, 6))
+box_data = [df[df["intent_id"] == i]["total_time"].dropna() for i in range(1, 21)]
+box = ax.boxplot(
+    box_data,
+    patch_artist=True,
+    widths=0.6,
+    boxprops=dict(linewidth=1.2, color="black"),
+    medianprops=dict(color="black", linewidth=1.2),
+    whiskerprops=dict(color="black", linewidth=1),
+    capprops=dict(color="black", linewidth=1),
+)
+
+# ======== 6. 为每个箱子设置黑白填充 ========
+for patch, hatch in zip(box["boxes"], hatches):
+    patch.set_facecolor("white")
+    patch.set_edgecolor("black")
+    patch.set_hatch(hatch)
+
+# ======== 7. 坐标轴与标题 ========
+# ax.set_title("实验2：修复意图与无需修复意图的执行时间分布", fontsize=14, fontproperties=prop) 
+ax.set_xlabel("意图编号", fontsize=12, fontproperties=prop)
+ax.set_ylabel("总执行时间（秒）", fontsize=12, fontproperties=prop)
+ax.set_xticks(range(1, 21))
+ax.set_xticklabels(range(1, 21), fontproperties=prop, fontsize=10)
+
+# ======== 8. 分割线与说明文字 ========
+ax.axvline(x=10.5, color="gray", linestyle="--")
+ymax = ax.get_ylim()[1]
+ax.text(
+    10.7, ymax * 0.95,
+    "意图 11–20：无需修复",
+    color="gray",
+    fontsize=10,
+    fontproperties=prop
+)
+
+# ======== 9. 图例（黑白填充区分） ========
+legend_elements = [
+    Patch(facecolor='white', edgecolor='black', hatch='xx', label='需修复意图'),
+    Patch(facecolor='white', edgecolor='black', hatch='//', label='无需修复意图')
+]
+ax.legend(
+    handles=legend_elements,
+    loc="upper left",
+    bbox_to_anchor=(1.02, 1.0),
+    prop=prop,
+    fontsize=10
+)
+
+# ======== 10. 网格与边框样式 ========
+ax.grid(axis="y", linestyle="--", alpha=0.6)
+ax.spines['top'].set_visible(False)
+ax.spines['right'].set_visible(False)
+
+# ======== 11. 保存图像 ========
+plt.tight_layout(rect=[0, 0, 0.85, 1])
+output_path = os.path.join(latest_dir, "exp2_time_boxplot_bw.png")
+plt.savefig(output_path, dpi=300, bbox_inches="tight")
+plt.close()
+
+print(f"✅ 图表已保存至: {output_path}")
 
 # 文件路径: ./frontend/templates/index.html
 <!DOCTYPE html>

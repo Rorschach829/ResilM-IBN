@@ -55,6 +55,7 @@ class IntentAgent:
             raise Exception(f"LLM 请求失败: {e}")
 
         if response:
+            print("本次调用llm的token使用量如下")
             record_tokens_from_response(response)
         else:
             raise Exception("LLM 响应为空，无法继续解析")

@@ -18,7 +18,7 @@ import ryu.topology.switches
 # ✅ Flask App 导入
 from backend.api.app import app as flask_app
 
-from backend.coordinator.coordinator_agent import CoordinatorAgent
+# from backend.coordinator.coordinator_agent import CoordinatorAgent
 from backend.agents.flow_agent import FlowAgent
 from backend.agents.qa_agent import QAAgent
 from backend.agents.topology_agent import TopologyAgent

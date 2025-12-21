@@ -16,7 +16,7 @@ _coordinator = None
 def _get_coordinator():
     global _coordinator
     if _coordinator is None:
-        from backend.coordinator.coordinator_agent import CoordinatorAgent
+        # from backend.coordinator.coordinator_agent import CoordinatorAgent
         _coordinator = CoordinatorAgent()
     return _coordinator
 

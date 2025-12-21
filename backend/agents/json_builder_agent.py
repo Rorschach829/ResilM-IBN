@@ -3,6 +3,7 @@ from backend.llm.llm_utils import client
 from backend.utils.utils import extract_json_from_response
 from backend.utils.messagepool_utils import send_intent
 from backend.coordinator.message_pool import message_pool
+from backend.utils.token_utils import record_tokens_from_response
 import uuid, json, requests
 import re
 from typing import List, Optional
@@ -74,6 +75,12 @@ class JSONBuilderAgent:
         except Exception as e:
             print(f"[JSONBuilderAgent] ❌ LLM 调用或 JSON 解析失败: {e}")
             return
+
+        if response:
+            print("本次JSON_builder_agent调用llm的token使用量如下")
+            record_tokens_from_response(response)
+        else:
+            raise Exception("LLM 响应为空，无法继续解析")
 
         if not isinstance(json_array, list):
             print("[JSONBuilderAgent] ❌ 返回结果不是 JSON 数组")
