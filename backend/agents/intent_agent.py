@@ -3,12 +3,12 @@ import json
 import os
 import uuid
 import time
-
+from backend.llm.llm_utils import client
 from backend.utils.token_utils import record_tokens_from_response
 from backend.utils.messagepool_utils import send_intent
 
-client = OpenAI(api_key="sk-692005762cca46ac9faf28703ae6efe0",
-                base_url="https://api.deepseek.com")
+# client = OpenAI(api_key="sk-692005762cca46ac9faf28703ae6efe0",
+#                 base_url="https://api.deepseek.com")
 
 
 class IntentAgent:
@@ -45,7 +45,15 @@ class IntentAgent:
 
         try:
             response = client.chat.completions.create(
-                model="deepseek-chat",
+                # model="deepseek-chat",
+                # model="phi4:14b",
+                # model="phi3:medium",
+                # model="qwen2.5-coder:32b",
+                # model="codellama:70b",
+                # model="mistral-small:24b",
+                # model="llama3.1:latest",
+                model="deepseek-r1:32b",
+                # model="deepseek-r1:70b",
                 messages=messages,
                 temperature = 0.0,
                 stream=False
@@ -55,7 +63,7 @@ class IntentAgent:
             raise Exception(f"LLM 请求失败: {e}")
 
         if response:
-            print("本次调用llm的token使用量如下")
+            print("本次调用intent_agent的token使用量如下")
             record_tokens_from_response(response)
         else:
             raise Exception("LLM 响应为空，无法继续解析")

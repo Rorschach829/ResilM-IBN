@@ -62,7 +62,15 @@ class JSONBuilderAgent:
 
         try:
             response = client.chat.completions.create(
-                model="deepseek-chat",
+                # model="deepseek-chat",
+                # model="phi4:14b",
+                # model="phi3:medium",
+                # model="qwen2.5-coder:32b",
+                # model="codellama:70b",
+                # model="mistral-small:24b",
+                # model="llama3.1:latest",
+                model="deepseek-r1:32b",
+                # model="deepseek-r1:70b",
                 messages=messages,
                 stream=False,
                 temperature=0.0
