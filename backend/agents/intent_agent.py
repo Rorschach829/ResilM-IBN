@@ -4,12 +4,9 @@ import os
 import uuid
 import time
 from backend.llm.llm_utils import client
+from backend.llm.llm_utils import extract_pure_json
 from backend.utils.token_utils import record_tokens_from_response
 from backend.utils.messagepool_utils import send_intent
-
-# client = OpenAI(api_key="sk-692005762cca46ac9faf28703ae6efe0",
-#                 base_url="https://api.deepseek.com")
-
 
 class IntentAgent:
     def __init__(self, prompt_path="/data/gjw/Meta-IBN/backend/agents/prompts/intent_agent.txt"):
@@ -39,26 +36,27 @@ class IntentAgent:
         response = None
         prompt = self.build_prompt(intent_text)
         messages = [
-            {"role": "system", "content": "你是网络拓扑与控制指令生成助手，只输出JSON指令。"},
+            {"role": "system", "content": "你是网络拓扑与控制指令生成助手，必须只输出严格JSON（对象或数组），禁止输出<think>、解释文字、Markdown代码块。"},
             {"role": "user", "content": prompt}
         ]
 
         try:
             response = client.chat.completions.create(
-                # model="deepseek-chat",
+                model="deepseek-chat",
                 # model="phi4:14b",
                 # model="phi3:medium",
                 # model="qwen2.5-coder:32b",
                 # model="codellama:70b",
                 # model="mistral-small:24b",
                 # model="llama3.1:latest",
-                model="deepseek-r1:32b",
+                # model="deepseek-r1:32b",
                 # model="deepseek-r1:70b",
                 messages=messages,
                 temperature = 0.0,
                 stream=False
             )
             content = response.choices[0].message.content.strip()
+            print("[IntentAgent] LLM 返回初始内容:\n", content)
         except Exception as e:
             raise Exception(f"LLM 请求失败: {e}")
 
@@ -68,28 +66,54 @@ class IntentAgent:
         else:
             raise Exception("LLM 响应为空，无法继续解析")
 
+        data = extract_pure_json(content)   # ✅ data 是 dict 或 list
+        print("[IntentAgent] 🔄 LLM 返回清洗后的 JSON 对象:\n", data)
+
+        # 统一 action（强烈建议，防止 plan_Steps 这种）
+        print("[DEBUG] data type before norm:", type(data), data)
+        def norm_action(x):
+            print("[DEBUG] norm_action x type:", type(x), "action type:", type(x.get("action")) if isinstance(x, dict) else None)
+            if isinstance(x, dict) and "action" in x and isinstance(x["action"], str):
+                x["action"] = x["action"].strip().lower()
+            return x
+        # def norm_action(x):
+        #     if isinstance(x, dict) and "action" in x and isinstance(x["action"], str):
+        #         x["action"] = x["action"].strip().lower()
+        #     return x
+
+        if isinstance(data, dict):
+            data = norm_action(data)
+            return [data]
+        elif isinstance(data, list):
+            return [norm_action(item) if isinstance(item, dict) else item for item in data]
+        else:
+            raise Exception("返回内容既不是 JSON 对象也不是数组")
         # 清除 markdown 包裹
-        if content.startswith("```"):
-            content = content.strip("`")
-            lines = content.splitlines()
-            if lines and lines[0].startswith("json"):
-                content = "\n".join(lines[1:])  # 删除第一行 ```json
+        # if content.startswith("```"):
+        #     content = content.strip("`")
+        #     lines = content.splitlines()
+        #     if lines and lines[0].startswith("json"):
+        #         content = "\n".join(lines[1:])  # 删除第一行 ```json
 
-        print("[IntentAgent] 🔄 LLM 返回清洗后的内容:\n", content)
+        # print("[IntentAgent] 🔄 LLM 返回清洗后的内容:\n", content)
 
-        if not content:
-            raise Exception("LLM 返回为空，请检查提示词")
+        # if not content:
+        #     raise Exception("LLM 返回为空，请检查提示词")
 
-        try:
-            json_data = json.loads(content)
-            if isinstance(json_data, dict):
-                return [json_data]
-            elif isinstance(json_data, list):
-                return json_data
-            else:
-                raise Exception("返回内容既不是 JSON 对象也不是数组")
-        except json.JSONDecodeError as e:
-            raise Exception(f"LLM 返回内容不是有效JSON: {e}\n内容:\n{content}")
+        # try:
+        #     json_data = json.loads(content)
+        #     print("json_data的格式为：")
+        #     print(type(json_data))
+        #     print("json_data的数据为")
+        #     print(json_data)
+        #     if isinstance(json_data, dict):
+        #         return [json_data]
+        #     elif isinstance(json_data, list):
+        #         return json_data
+        #     else:
+        #         raise Exception("返回内容既不是 JSON 对象也不是数组")
+        # except json.JSONDecodeError as e:
+        #     raise Exception(f"LLM 返回内容不是有效JSON: {e}\n内容:\n{content}")
     
     def send_instruction(self, intent_text: str):
         try:
