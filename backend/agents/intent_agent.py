@@ -3,6 +3,7 @@ import json
 import os
 import uuid
 import time
+from backend.utils import token_counter
 from backend.llm.llm_utils import client
 from backend.llm.llm_utils import extract_pure_json
 from backend.utils.token_utils import record_tokens_from_response
@@ -42,15 +43,8 @@ class IntentAgent:
 
         try:
             response = client.chat.completions.create(
-                model="deepseek-chat",
-                # model="phi4:14b",
-                # model="phi3:medium",
-                # model="qwen2.5-coder:32b",
-                # model="codellama:70b",
-                # model="mistral-small:24b",
-                # model="llama3.1:latest",
-                # model="deepseek-r1:32b",
-                # model="deepseek-r1:70b",
+                model="qwen-plus",
+                # model="deepseek-chat",
                 messages=messages,
                 temperature = 0.0,
                 stream=False
@@ -59,6 +53,11 @@ class IntentAgent:
             print("[IntentAgent] LLM 返回初始内容:\n", content)
         except Exception as e:
             raise Exception(f"LLM 请求失败: {e}")
+        
+        #记录token
+        # resp = ...
+        t = getattr(getattr(response, "usage", None), "total_tokens", 0) or 0
+        token_counter.add_intent(t)
 
         if response:
             print("本次调用intent_agent的token使用量如下")

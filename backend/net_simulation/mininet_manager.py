@@ -6,6 +6,7 @@ from backend.utils.utils import is_cyclic_topology
 from backend.utils.arp_utils import configure_static_arp
 from backend.utils.topology_utils import trigger_controller_learn_hosts
 import time
+import os
 # === 引入图结构支持 ===
 from backend.utils.topology_utils import TopologyGraph
 

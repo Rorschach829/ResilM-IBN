@@ -5,10 +5,18 @@ import json
 import json
 import re
 # 初始化 DeepSeek 客户端
+# client = OpenAI(
+#     api_key="sk-692005762cca46ac9faf28703ae6efe0",
+#     base_url="https://api.deepseek.com"
+# )
+
+#通义千问api
 client = OpenAI(
-    api_key="sk-692005762cca46ac9faf28703ae6efe0",
-    base_url="https://api.deepseek.com"
+    # 若没有配置环境变量，请用百炼API Key将下行替换为：api_key="sk-xxx"
+    api_key="sk-b4df94d34cbe4734a39e983ba0690c19",
+    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
 )
+
 # client = OpenAI(
 #     api_key="ollama",  # 随便写，Ollama 不校验
 #     base_url="http://localhost:11434/v1"

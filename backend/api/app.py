@@ -87,6 +87,18 @@ def stop():
 def token_stats():
     return jsonify({"total_tokens": get_total_tokens()})
 
+# ---- token counter in Flask process ----
+from backend.utils import token_counter
+
+@app.post("/token/reset")
+def token_reset():
+    token_counter.reset()
+    return {"ok": True}
+
+@app.get("/token/summary")
+def token_summary():
+    return token_counter.summary()
+
 # 清理拓扑并且清空Current_log_file
 @app.route("/cleanup", methods=["POST"])
 def cleanup_topology():

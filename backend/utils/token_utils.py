@@ -10,7 +10,6 @@ def record_tokens_from_response(response):
             completion = response.usage.completion_tokens
             total = response.usage.total_tokens
             total_tokens_used += total
-
             print(f"[Token Monitor] prompt: {prompt}, completion: {completion}, total: {total}")
         else:
             print("[Token Monitor] ⚠️ 无 usage 字段，可能是异常响应")

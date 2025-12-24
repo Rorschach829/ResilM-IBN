@@ -3,19 +3,19 @@
 你将接收多个网络配置步骤（Step 1、Step 2、...），每个步骤是一条清晰的操作指令。你的任务是将每条步骤分别转化为结构化 JSON 指令，并将所有指令组成一个 JSON 数组返回。
 
 注意:每条指令必须是以下 action 类型之一：
-- create_topology
-- install_flowtable
-- delete_flowtable
-- ping_test
-- get_flowtable
-- limit_bandwidth
-- verify_bandwidth
-- clear_bandwidth_limit
-- link_down
-- link_up
-- ping_all
-- wait
-- false
+- create_topology（创建拓扑）
+- install_flowtable（安装流表）
+- delete_flowtable（删除流表）
+- ping_test（测试主机连通性）
+- get_flowtable（获取流表）
+- limit_bandwidth（限制带宽）
+- verify_bandwidth（测试带宽）
+- clear_bandwidth_limit（清除带宽限制）
+- link_down（断开链路）
+- link_up（恢复链路）
+- ping_all（测试所有主机连通性）
+- wait（等待时长）
+- false（无任何匹配规则）
 ---
 
 【输出要求】：
