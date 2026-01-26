@@ -12,7 +12,14 @@ fm.fontManager.addfont(font_path)
 prop = fm.FontProperties(fname=font_path)
 matplotlib.rcParams['font.family'] = prop.get_name()
 matplotlib.rcParams['axes.unicode_minus'] = False
-
+matplotlib.rcParams.update({
+    "font.size": 6.5,
+    "axes.titlesize": 6.5,
+    "axes.labelsize": 6.5,
+    "xtick.labelsize": 6,
+    "ytick.labelsize": 6,
+    "legend.fontsize": 6,
+})
 # ======== 0. 自动查找最新 exp2_test_* 文件夹 ========
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 RESULT_DIR = BASE_DIR
@@ -72,14 +79,14 @@ for i, row in enumerate(grouped_avg.itertuples()):
         f"{row.avg_time:.1f} s",
         ha="center",
         va="bottom",
-        fontsize=10,
+        fontsize=7,
         fontproperties=prop
     )
 
 # ======== 7. 坐标轴与标题 ========
 ax.set_xticks(x_pos)
-ax.set_xticklabels(grouped_avg["group"], fontproperties=prop, fontsize=11)
-ax.set_ylabel("平均执行时间（秒）", fontsize=12, fontproperties=prop)
+ax.set_xticklabels(grouped_avg["group"], fontproperties=prop, fontsize=7)
+ax.set_ylabel("平均执行时间（秒）", fontsize=7, fontproperties=prop)
 # ax.set_title("实验2：修复意图与无需修复意图的平均执行时间对比", fontsize=14, fontproperties=prop)
 ax.set_ylim(grouped_avg["avg_time"].min() * 0.9, grouped_avg["avg_time"].max() * 1.15)
 
@@ -92,7 +99,7 @@ ax.legend(
     handles=legend_elements,
     loc="upper right",
     prop=prop,
-    fontsize=10
+    fontsize=7
 )
 
 # ======== 9. 样式调整 ========
@@ -102,7 +109,7 @@ ax.grid(axis="y", linestyle="--", alpha=0.6)
 
 # ======== 10. 保存图像 ========
 plt.tight_layout()
-output_path = os.path.join(latest_dir, "exp2_avg_time_grouped_bw.png")
+output_path = os.path.join(latest_dir, "exp2_avg_time_grouped_bw_small.png")
 plt.savefig(output_path, dpi=300, bbox_inches="tight")
 plt.close()
 

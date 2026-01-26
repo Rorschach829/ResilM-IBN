@@ -180,6 +180,7 @@ def stop_topology() -> str:
         valid_hosts.clear()
         CURRENT_LOG_FILE = None
 
+        print("当前由stop_topology()清理拓扑")
         os.system("mn -c")
         time.sleep(3)
 

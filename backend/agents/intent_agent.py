@@ -43,8 +43,11 @@ class IntentAgent:
 
         try:
             response = client.chat.completions.create(
-                model="qwen-plus",
+                # model="qwen-plus",
                 # model="deepseek-chat",
+                model="glm-4.6",
+                # model="kimi-k2-thinking",
+                extra_body={"enable_thinking": False},
                 messages=messages,
                 temperature = 0.0,
                 stream=False
@@ -66,7 +69,8 @@ class IntentAgent:
             raise Exception("LLM 响应为空，无法继续解析")
 
         data = extract_pure_json(content)   # ✅ data 是 dict 或 list
-        print("[IntentAgent] 🔄 LLM 返回清洗后的 JSON 对象:\n", data)
+        # print("[IntentAgent] 🔄 LLM 返回清洗后的 JSON 对象:\n", data)
+
 
         # 统一 action（强烈建议，防止 plan_Steps 这种）
         print("[DEBUG] data type before norm:", type(data), data)

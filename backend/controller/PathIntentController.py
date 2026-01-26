@@ -126,7 +126,10 @@ class PathIntentController(app_manager.RyuApp):
         # 已注册则检查是否重复注册
         if src_mac in self.hosts:
             print("DEBUG hosts entry:", src_mac, self.hosts.get(src_mac), type(self.hosts.get(src_mac)))
-            old_dpid, old_port, _ = self.hosts[src_mac]
+            # old_dpid, old_port, _ = self.hosts[src_mac]
+            host_info = self.hosts[src_mac]
+            old_dpid = host_info["dpid"]
+            old_port = host_info["port"]
             if old_dpid == dpid and old_port == in_port:
                 return
             else:

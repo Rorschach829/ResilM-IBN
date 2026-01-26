@@ -66,18 +66,21 @@ class JSONBuilderAgent:
 
         try:
             response = client.chat.completions.create(
-                model="qwen-plus",
+                # model="qwen-plus",
                 # model="deepseek-chat",
+                model="glm-4.6",
+                # model="kimi-k2-thinking",
+                extra_body={"enable_thinking": False},
                 messages=messages,
                 stream=False,
                 temperature=0.0
             )
 
             raw = response.choices[0].message.content.strip()
-            print(f"[JSONBuilderAgent] 📥 LLM 原始输出:\n{raw}")
+            # print(f"[JSONBuilderAgent] 📥 LLM 原始输出:\n{raw}")
 
             parsed = extract_pure_json(raw)
-            print(f"[JSONBuilderAgent] 📥 LLM 清洗后的输出:\n{parsed}")
+            # print(f"[JSONBuilderAgent] 📥 LLM 清洗后的输出:\n{parsed}")
 
             # ✅ parsed 已经是 list 或 dict，不要 json.loads
             if isinstance(parsed, dict):

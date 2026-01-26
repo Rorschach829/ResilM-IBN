@@ -4,6 +4,7 @@ import pandas as pd
 import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
+from matplotlib.ticker import FuncFormatter   # ✅ 新增：纵轴千分空格格式
 
 # ======== 字体设置（使用服务器指定字体路径） ========
 cn_font_path = "/usr/share/fonts/truetype/arphic-gbsn00lp/gbsn00lp.ttf"
@@ -21,12 +22,12 @@ matplotlib.rcParams['font.family'] = [
 matplotlib.rcParams['axes.unicode_minus'] = False
 
 matplotlib.rcParams.update({
-    "font.size": 9.5,
-    "axes.titlesize": 10,
-    "axes.labelsize": 9.5,
-    "xtick.labelsize": 9,
-    "ytick.labelsize": 9,
-    "legend.fontsize": 9,
+    "font.size": 6.5,
+    "axes.titlesize": 6.5,
+    "axes.labelsize": 6.5,
+    "xtick.labelsize": 6,
+    "ytick.labelsize": 6,
+    "legend.fontsize": 6,
 })
 
 # ======== 数据读取 ========
@@ -61,6 +62,14 @@ json_mean   = df["json_mean"].to_numpy()
 total_mean  = df["total_mean"].to_numpy()
 total_std   = df["total_std"].to_numpy()
 
+# ✅ 纵轴：4位数以上加千分空格（0~999 原样）
+def y_thousands_space(x, pos):
+    # token 是计数，这里按整数显示更自然；如果你想保留小数我也能给你一版
+    xi = int(round(x))
+    if abs(xi) >= 1000:
+        return f"{xi:,}".replace(",", " ")
+    return str(xi)
+
 fig, ax = plt.subplots(figsize=(7.2, 3.2), dpi=300)
 
 ax.bar(
@@ -86,7 +95,6 @@ for i in range(len(df)):
     else:
         text = f"±{total_std[i]:.1f}"
 
-    # 在柱顶稍微上移一点点
     ax.text(
         i, top + max(total_mean) * 0.002,
         text,
@@ -96,24 +104,38 @@ for i in range(len(df)):
 
 ax.set_title("各意图平均Token消耗（柱顶标注波动）")
 ax.set_xlabel("意图编号")
-ax.set_ylabel("Token数")
+ax.set_ylabel("Token消耗数量 /个")
 
 ax.set_xticks(x)
 ax.set_xticklabels(df["intent_id"].astype(str).tolist())
 
+# ✅ 要求1：纵坐标轴短线在里面
+ax.tick_params(axis="y", which="both", direction="in")
+
+# ✅ 要求2：横轴去掉短线（保留标签）
+ax.tick_params(axis="x", which="both", length=0)
+
+# ✅ 要求3：纵轴4位数以上加千分空格
+ax.yaxis.set_major_formatter(FuncFormatter(y_thousands_space))
+
 # ax.legend(frameon=True)
 ax.legend(
     loc="upper left",
-    bbox_to_anchor=(1.02, 1.0),
+    # bbox_to_anchor=(1.02, 1.0),
     ncol=1,
-    frameon=False
+    frameon=True
 )
 ax.grid(axis="y", linestyle="--", linewidth=0.6, alpha=0.6)
 
 fig.tight_layout()
-# fig.savefig("fig_token_stacked_bar_bw_with_std_text.pdf", bbox_inches="tight")
+
+# ✅ 原有输出 PNG
 fig.savefig("fig_token_stacked_bar_bw_with_std_text.png", bbox_inches="tight")
+
+# ✅ 要求4：额外输出 SVG
+fig.savefig("fig_token_stacked_bar_bw_with_std_text.svg", format="svg", bbox_inches="tight")
+
 plt.close(fig)
 
-print("[OK] 已生成 fig_token_stacked_bar_bw_with_std_text.pdf / png")
+print("[OK] 已生成 fig_token_stacked_bar_bw_with_std_text.png / svg")
 print("[INFO] 若想标注 CV%，请将 USE_CV=True")

@@ -109,15 +109,21 @@ def ping_once_multi_target(net, timeout=1):
     output_lines.append(f"⏱️ 总耗时: {elapsed} 秒")
     return "\n".join(output_lines)
 
-def robust_ping_pairs_multi_thread(net, max_workers=20, batch_size=50):
+from concurrent.futures import ThreadPoolExecutor
+import itertools, threading, time
+
+def robust_ping_pairs_multi_thread(net, max_workers=20, batch_size=50, fail_fast=True):
     hosts = net.hosts
     total_pairs = list(itertools.permutations(hosts, 2))
     total = len(total_pairs)
     results = {}
 
-    # 每个主机一个锁，避免并发访问
     host_locks = {host.name: threading.Lock() for host in hosts}
     global_lock = threading.Lock()
+
+    # ✅ 全局刹车：任意一次失败/异常就停
+    stop_event = threading.Event()
+    first_fail = {"pair": None, "reason": None}
 
     def is_ping_success(output):
         if "0 received" in output or "100% packet loss" in output:
@@ -126,46 +132,153 @@ def robust_ping_pairs_multi_thread(net, max_workers=20, batch_size=50):
             return False
         return True
 
+    def mark_fail(src_name, dst_name, reason):
+        with global_lock:
+            results[(src_name, dst_name)] = "X"
+            if first_fail["pair"] is None:
+                first_fail["pair"] = (src_name, dst_name)
+                first_fail["reason"] = reason
+
+        print(f"[失败] {src_name} → {dst_name} 无法连通 ({reason})")
+
+        if fail_fast:
+            stop_event.set()
+
     def ping_and_store(src, dst, idx):
-        # 使用各自主机的锁
+        # ✅ 如果已经 fail-fast，直接跳过后续任务
+        if fail_fast and stop_event.is_set():
+            return
+
         try:
+            # ✅ 防御：没接口/没IP 直接判失败（比线程里炸更可控）
+            if src.defaultIntf() is None or dst.defaultIntf() is None:
+                mark_fail(src.name, dst.name, "no interfaces")
+                return
+
             with host_locks[src.name], host_locks[dst.name]:
-                result = src.cmd(f"ping -c 1 -W 1 {dst.IP()}")
+                # 再检查一次（避免拿到锁之前就被 stop）
+                if fail_fast and stop_event.is_set():
+                    return
+
+                dst_ip = dst.IP()
+                if not dst_ip:
+                    mark_fail(src.name, dst.name, "dst has no IP")
+                    return
+
+                result = src.cmd(f"ping -c 1 -W 1 {dst_ip}")
                 ok = is_ping_success(result)
+
                 with global_lock:
                     results[(src.name, dst.name)] = "OK" if ok else "X"
-                    if not ok:
-                        print(f"[失败] {src.name} → {dst.name} 无法连通")
-                    if idx % 50 == 0 or idx == total:
-                        print(f"[进度] 已完成 {idx}/{total} 条 ping 测试")
+
+                if not ok:
+                    mark_fail(src.name, dst.name, "ping failed")
+
+                # 进度打印：fail-fast 时不需要太频繁
+                if idx % 50 == 0 or idx == total:
+                    print(f"[进度] 已完成 {idx}/{total} 条 ping 测试")
+
         except Exception as e:
             print(f"[线程错误] {src.name} → {dst.name} 执行失败: {e}")
-    print(f"[开始] 共 {total} 对主机进行 ping 测试，线程池大小为 {max_workers}，每批次 {batch_size} 条")
+            mark_fail(src.name, dst.name, f"exception: {e}")
+
+    print(f"[开始] 共 {total} 对主机进行 ping 测试，线程池大小为 {max_workers}，每批次 {batch_size} 条，fail_fast={fail_fast}")
     start_time = time.time()
 
     for i in range(0, total, batch_size):
+        # ✅ fail-fast：如果已经失败，不再进入后续 batch
+        if fail_fast and stop_event.is_set():
+            break
+
+        batch = total_pairs[i:i+batch_size]
+
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            batch = total_pairs[i:i+batch_size]
             futures = []
             for idx, (src, dst) in enumerate(batch, start=i+1):
+                if fail_fast and stop_event.is_set():
+                    break
                 futures.append(executor.submit(ping_and_store, src, dst, idx))
-            for future in futures:
-                future.result()
-        # time.sleep(0.5)
+
+            # ✅ 等待已提交的 futures 结束；如果 fail-fast，尽量取消未运行的任务
+            if fail_fast:
+                executor.shutdown(wait=True, cancel_futures=True)
+            else:
+                for future in futures:
+                    future.result()
 
     elapsed = time.time() - start_time
-    print(f"[完成] 所有主机对 ping 测试已完成，总耗时：{elapsed:.2f} 秒")
+
+    if fail_fast and first_fail["pair"] is not None:
+        print(f"[完成] fail-fast 触发：首个失败 {first_fail['pair']}，原因：{first_fail['reason']}，耗时：{elapsed:.2f} 秒")
+    else:
+        print(f"[完成] 所有主机对 ping 测试已完成，总耗时：{elapsed:.2f} 秒")
 
     return {
         "total": total,
         "success": sum(1 for v in results.values() if v == "OK"),
-        "failed_pairs": [(src, dst) for (src, dst), v in results.items() if v != "OK"]
+        "failed_pairs": [(src, dst) for (src, dst), v in results.items() if v != "OK"],
+        "fail_fast_triggered": bool(fail_fast and first_fail["pair"] is not None),
+        "first_fail": first_fail
     }
 
 
+# def robust_ping_pairs_multi_thread(net, max_workers=20, batch_size=50):
+#     hosts = net.hosts
+#     total_pairs = list(itertools.permutations(hosts, 2))
+#     total = len(total_pairs)
+#     results = {}
+
+#     # 每个主机一个锁，避免并发访问
+#     host_locks = {host.name: threading.Lock() for host in hosts}
+#     global_lock = threading.Lock()
+
+#     def is_ping_success(output):
+#         if "0 received" in output or "100% packet loss" in output:
+#             return False
+#         if "Destination Host Unreachable" in output or "Network is unreachable" in output:
+#             return False
+#         return True
+
+#     def ping_and_store(src, dst, idx):
+#         # 使用各自主机的锁
+#         try:
+#             with host_locks[src.name], host_locks[dst.name]:
+#                 result = src.cmd(f"ping -c 1 -W 1 {dst.IP()}")
+#                 ok = is_ping_success(result)
+#                 with global_lock:
+#                     results[(src.name, dst.name)] = "OK" if ok else "X"
+#                     if not ok:
+#                         print(f"[失败] {src.name} → {dst.name} 无法连通")
+#                     if idx % 50 == 0 or idx == total:
+#                         print(f"[进度] 已完成 {idx}/{total} 条 ping 测试")
+#         except Exception as e:
+#             print(f"[线程错误] {src.name} → {dst.name} 执行失败: {e}")
+#     print(f"[开始] 共 {total} 对主机进行 ping 测试，线程池大小为 {max_workers}，每批次 {batch_size} 条")
+#     start_time = time.time()
+
+#     for i in range(0, total, batch_size):
+#         with ThreadPoolExecutor(max_workers=max_workers) as executor:
+#             batch = total_pairs[i:i+batch_size]
+#             futures = []
+#             for idx, (src, dst) in enumerate(batch, start=i+1):
+#                 futures.append(executor.submit(ping_and_store, src, dst, idx))
+#             for future in futures:
+#                 future.result()
+#         # time.sleep(0.5)
+
+#     elapsed = time.time() - start_time
+#     print(f"[完成] 所有主机对 ping 测试已完成，总耗时：{elapsed:.2f} 秒")
+
+#     return {
+#         "total": total,
+#         "success": sum(1 for v in results.values() if v == "OK"),
+#         "failed_pairs": [(src, dst) for (src, dst), v in results.items() if v != "OK"]
+#     }
 
 
-# 单线程双向ping_pairs
+
+
+# 单线程双向ping_pairs，废案
 def ping_pairs_single_thread(net, timeout=1):
     hosts = net.hosts
     results = []

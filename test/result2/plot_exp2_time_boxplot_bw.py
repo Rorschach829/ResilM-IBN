@@ -1,4 +1,4 @@
-# ======== 实验2：修复意图与无需修复意图执行时间箱线图（黑白打印 + 中文） ========
+# ======== 实验2：修复意图与无需修复意图执行时间箱线图（黑白打印 + 中文） 图8========
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
@@ -67,18 +67,20 @@ for patch, hatch in zip(box["boxes"], hatches):
     patch.set_hatch(hatch)
 
 # ======== 7. 坐标轴与标题 ========
-# ax.set_title("实验2：修复意图与无需修复意图的执行时间分布", fontsize=14, fontproperties=prop) 
 ax.set_xlabel("意图编号", fontsize=12, fontproperties=prop)
-ax.set_ylabel("总执行时间（秒）", fontsize=12, fontproperties=prop)
+ax.set_ylabel("总执行时间 /s", fontsize=12, fontproperties=prop)
 ax.set_xticks(range(1, 21))
 ax.set_xticklabels(range(1, 21), fontproperties=prop, fontsize=10)
+
+# ✅ 要求：纵轴 & 横轴刻度短线朝内（同时不画顶部/右侧刻度）
+ax.tick_params(axis="both", which="both", direction="in", top=False, right=False)
 
 # ======== 8. 分割线与说明文字 ========
 ax.axvline(x=10.5, color="gray", linestyle="--")
 ymax = ax.get_ylim()[1]
 ax.text(
     10.7, ymax * 0.95,
-    "意图 11–20：无需修复",
+    "意图 11–20：不需要修复",
     color="gray",
     fontsize=10,
     fontproperties=prop
@@ -86,26 +88,31 @@ ax.text(
 
 # ======== 9. 图例（黑白填充区分） ========
 legend_elements = [
-    Patch(facecolor='white', edgecolor='black', hatch='xx', label='需修复意图'),
-    Patch(facecolor='white', edgecolor='black', hatch='//', label='无需修复意图')
+    Patch(facecolor='white', edgecolor='black', hatch='xxx', label='修复意图'),
+    Patch(facecolor='white', edgecolor='black', hatch='/////', label='不需要修复意图')
 ]
 ax.legend(
     handles=legend_elements,
     loc="upper left",
-    bbox_to_anchor=(1.02, 1.0),
+    frameon=True,
     prop=prop,
-    fontsize=10
+    fontsize=7
 )
 
 # ======== 10. 网格与边框样式 ========
 ax.grid(axis="y", linestyle="--", alpha=0.6)
-ax.spines['top'].set_visible(False)
-ax.spines['right'].set_visible(False)
+# ax.spines['top'].set_visible(False)
+# ax.spines['right'].set_visible(False)
 
-# ======== 11. 保存图像 ========
+# ======== 11. 保存图像（PNG + SVG） ========
 plt.tight_layout(rect=[0, 0, 0.85, 1])
-output_path = os.path.join(latest_dir, "exp2_time_boxplot_bw.png")
-plt.savefig(output_path, dpi=300, bbox_inches="tight")
+
+output_png = os.path.join(latest_dir, "exp2_time_boxplot_bw.png")
+output_svg = os.path.join(latest_dir, "exp2_time_boxplot_bw.svg")
+
+plt.savefig(output_png, dpi=300, bbox_inches="tight")
+plt.savefig(output_svg, format="svg", bbox_inches="tight")  # ✅ 额外保存 SVG
 plt.close()
 
-print(f"✅ 图表已保存至: {output_path}")
+print(f"✅ 图表已保存至: {output_png}")
+print(f"✅ SVG 图已保存至: {output_svg}")

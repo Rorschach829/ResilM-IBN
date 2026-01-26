@@ -2,7 +2,6 @@ from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
 from backend.agents.intent_agent import IntentAgent
 from backend.net_simulation.mininet_manager import run_mininet_code, get_current_topology, stop_topology,rebuild_topology
-from backend.net_simulation.instruction_executor import execute_instruction
 import backend.net_simulation.mininet_manager as mm
 from backend.utils.token_utils import get_total_tokens
 from backend.utils.logger import log_intent, start_new_intent_log,init_logger
