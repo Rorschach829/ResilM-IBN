@@ -5,9 +5,9 @@ from backend.net_simulation.mininet_manager import run_mininet_code, get_current
 import backend.net_simulation.mininet_manager as mm
 from backend.utils.token_utils import get_total_tokens
 from backend.utils.logger import log_intent, start_new_intent_log,init_logger
-app = Flask(__name__, 
-            template_folder="/data/gjw/Meta-IBN/frontend/templates", 
-            static_folder="/data/gjw/Meta-IBN/frontend/static")
+app = Flask(__name__,
+            template_folder="../../frontend/templates",
+            static_folder="../../frontend/static")
 CORS(app, resources={r"/*": {"origins": "*"}})
 from backend.utils.messagepool_utils import send_intent
 from backend.agents.json_builder_agent import JSONBuilderAgent

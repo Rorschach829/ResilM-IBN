@@ -1,6 +1,0 @@
-model,total_runs,success_runs,success_rate,avg_time,avg_intent_token,avg_json_token,avg_token
-GLM4.6-nothink,150,105,0.7,121.105,2834.24,3388.46,6222.7
-GLM4.6-think,150,145,0.9667,123.641,2092.53,3843.96,5936.49
-kimi-k2-think,150,120,0.8,132.608,2806.91,3291.79,6098.7
-Qwen-plus,150,148,0.9867,25.196,1427.72,2474.51,3902.22
-deepseek-chat,150,148,0.9867,43.036,1344.24,2261.5,3605.74

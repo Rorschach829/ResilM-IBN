@@ -3,8 +3,11 @@ from backend.utils.messagepool_utils import send_intent
 from backend.coordinator.message_pool import message_pool
 from backend.utils import token_counter
 from backend.utils.token_utils import record_tokens_from_response
+from backend.rag.rag_system import rag_system
+from backend.lora.local_lora_integration import get_network_config_with_local_lora
 import requests
 import re
+import logging
 from typing import List, Optional
 
 
@@ -15,7 +18,7 @@ class JSONBuilderAgent:
 
     # ✅ 修正：加 self
     def load_json_builder_prompt(self) -> str:
-        with open("/data/gjw/Meta-IBN/backend/agents/prompts/json_builder_agent.txt", "r", encoding="utf-8") as f:
+        with open("../agents/prompts/json_builder_agent.txt", "r", encoding="utf-8") as f:
             return f.read()
 
     def handle_plan(self, message: dict):
@@ -58,6 +61,10 @@ class JSONBuilderAgent:
         # ✅ 关键：把你长规则 prompt 用上
         json_prompt = self.load_json_builder_prompt()
 
+        # 使用RAG增强提示 - 使用intent_text作为查询来获取相关信息
+        intent_text = message.get("intent_text", "")
+        enhanced_json_prompt = rag_system.augment_prompt(json_prompt, intent_text)
+
         messages = [
             {"role": "system", "content": "你是网络拓扑与控制指令生成助手，必须只输出严格JSON（对象或数组），禁止输出<think>、解释文字、Markdown代码块。"},
             # ✅ 修正：把 json_prompt + prompt 拼进去（否则模型根本看不到你的规则）
@@ -65,20 +72,64 @@ class JSONBuilderAgent:
         ]
 
         try:
-            response = client.chat.completions.create(
-                # model="qwen-plus",
-                # model="deepseek-chat",
-                model="glm-4.6",
-                # model="kimi-k2-thinking",
-                extra_body={"enable_thinking": False},
-                messages=messages,
-                stream=False,
-                temperature=0.0
-            )
+            # 尝试使用本地LoRA模型，如果不可用则使用标准方法
+            try:
+                from backend.lora.local_lora_integration import is_local_lora_available
 
-            raw = response.choices[0].message.content.strip()
-            # print(f"[JSONBuilderAgent] 📥 LLM 原始输出:\n{raw}")
+                if is_local_lora_available():
+                    # 如果本地LoRA可用，使用增强生成
+                    prompt_for_lora = f"{json_prompt}\n\n{prompt}"
+                    raw = get_network_config_with_local_lora(prompt_for_lora, use_rag=False)  # RAG 已经在上层使用
+                else:
+                    # 使用标准 LLM 调用
+                    response = client.chat.completions.create(
+                        # model="qwen-plus",
+                        # model="deepseek-chat",
+                        model="glm-4.6",
+                        # model="kimi-k2-thinking",
+                        extra_body={"enable_thinking": False},
+                        messages=messages,
+                        stream=False,
+                        temperature=0.0
+                    )
 
+                    raw = response.choices[0].message.content.strip()
+
+                    #记录token
+                    # resp = ...
+                    t = getattr(getattr(response, "usage", None), "total_tokens", 0) or 0
+                    token_counter.add_json(t)
+
+                    if response:
+                        print("本次JSON_builder_agent调用llm的token使用量如下")
+                        record_tokens_from_response(response)
+                    else:
+                        raise Exception("LLM 响应为空，无法继续解析")
+            except Exception as e:
+                print(f"[JSONBuilderAgent] 本地LoRA 或 LLM 调用失败，使用标准方法: {e}")
+                # 回退到原始方法
+                response = client.chat.completions.create(
+                    model="glm-4.6",
+                    extra_body={"enable_thinking": False},
+                    messages=messages,
+                    stream=False,
+                    temperature=0.0
+                )
+
+                raw = response.choices[0].message.content.strip()
+
+                #记录token
+                t = getattr(getattr(response, "usage", None), "total_tokens", 0) or 0
+                token_counter.add_json(t)
+
+                if response:
+                    print("本次JSON_builder_agent调用llm的token使用量如下")
+                    record_tokens_from_response(response)
+                else:
+                    raise Exception("LLM 响应为空，无法继续解析")
+
+        # 解析响应 - 无论是来自 LoRA 还是标准 LLM
+        try:
             parsed = extract_pure_json(raw)
             # print(f"[JSONBuilderAgent] 📥 LLM 清洗后的输出:\n{parsed}")
 
@@ -91,19 +142,9 @@ class JSONBuilderAgent:
                 raise ValueError(f"Unexpected type from extract_pure_json: {type(parsed)}")
 
         except Exception as e:
-            print(f"[JSONBuilderAgent] ❌ LLM 调用或 JSON 解析失败: {e}")
+            print(f"[JSONBuilderAgent] ❌ JSON 解析失败: {e}")
+            print(f"[JSONBuilderAgent] 尝试解析的原始内容: {raw}")
             return
-
-        #记录json_tokens
-        t = getattr(getattr(response, "usage", None), "total_tokens", 0) or 0
-        token_counter.add_json(t)
-        
-        # token 统计（原逻辑不动）
-        if response:
-            print("本次JSON_builder_agent调用llm的token使用量如下")
-            record_tokens_from_response(response)
-        else:
-            raise Exception("LLM 响应为空，无法继续解析")
 
         if not isinstance(json_array, list):
             print("[JSONBuilderAgent] ❌ 返回结果不是 JSON 数组")
@@ -165,7 +206,7 @@ class JSONBuilderAgent:
 #         message_pool.subscribe("plan_steps", self.handle_plan)
 
 #     def load_json_builder_prompt() -> str:
-#         with open("/data/gjw/Meta-IBN/backend/agents/prompts/json_builder_agent.txt", "r", encoding="utf-8") as f:
+#         with open("../agents/prompts/json_builder_agent.txt", "r", encoding="utf-8") as f:
 #             return f.read()
 
 #     def handle_plan(self, message: dict):
@@ -297,7 +338,7 @@ class JSONBuilderAgent:
 #         message_pool.subscribe("plan_steps", self.handle_plan)
 
 #     def load_json_builder_prompt(self) -> str:
-#         with open("/data/gjw/Meta-IBN/backend/agents/prompts/json_builder_agent.txt", "r", encoding="utf-8") as f:
+#         with open("../agents/prompts/json_builder_agent.txt", "r", encoding="utf-8") as f:
 #             return f.read()
 
 #     def handle_plan(self, message: dict):
@@ -431,7 +472,7 @@ class JSONBuilderAgent:
 #         message_pool.subscribe("plan_steps", self.handle_plan)
 
 #     def load_json_builder_prompt(self) -> str:
-#         with open("/data/gjw/Meta-IBN/backend/agents/prompts/json_builder_agent.txt", "r", encoding="utf-8") as f:
+#         with open("../agents/prompts/json_builder_agent.txt", "r", encoding="utf-8") as f:
 #             return f.read()
 
 #     # ✅ 新增：构建“单个 step”的 prompt（保留你原 prompt 风格）

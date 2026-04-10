@@ -8,9 +8,11 @@ from backend.llm.llm_utils import client
 from backend.llm.llm_utils import extract_pure_json
 from backend.utils.token_utils import record_tokens_from_response
 from backend.utils.messagepool_utils import send_intent
+from backend.rag.rag_system import rag_system
+from backend.lora.lora_integration import get_network_config_with_lora
 
 class IntentAgent:
-    def __init__(self, prompt_path="/data/gjw/Meta-IBN/backend/agents/prompts/intent_agent.txt"):
+    def __init__(self, prompt_path="../agents/prompts/intent_agent.txt"):
         self.prompt_path = prompt_path
         self.name = "IntentAgent"
 
@@ -25,10 +27,12 @@ class IntentAgent:
 
     def build_prompt(self, intent_text: str) -> str:
         """
-        替换模板中的 {intent_text} 变量
+        替换模板中的 {intent_text} 变量，并使用RAG增强上下文
         """
         template = self.load_prompt_template()
-        return template.format(intent_text=intent_text)
+        # 使用RAG系统增强提示
+        augmented_prompt = rag_system.augment_prompt(template, intent_text)
+        return augmented_prompt.format(intent_text=intent_text)
 
     def intent_to_instruction(self, intent_text: str) -> list[dict]:
         """

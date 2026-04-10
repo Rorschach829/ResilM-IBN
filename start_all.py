@@ -41,8 +41,10 @@ def main():
 
 # ✅ 设置 Ryu 日志写入文件（避免和 Flask 冲突）
 def setup_ryu_logging():
-    log_path = "/data/gjw/logs/ryu.log"
-    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+    log_dir = os.path.join(PROJECT_ROOT, "logs")
+    log_path = os.path.join(log_dir, "ryu.log")
+    os.makedirs(log_dir, exist_ok=True)
     logger = logging.getLogger("RYU")
     handler = logging.FileHandler(log_path, mode='w', encoding='utf-8')
     formatter = logging.Formatter("[%(asctime)s][%(levelname)s] %(message)s")

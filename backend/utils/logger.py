@@ -3,9 +3,11 @@ import json
 from datetime import datetime
 import glob
 
-BASE_LOG_DIR = "/data/gjw/Meta-IBN/logs"
+# Use path relative to the project root
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+BASE_LOG_DIR = os.path.join(PROJECT_ROOT, "logs")
+TMP_DIR = os.path.join(PROJECT_ROOT, "tmp")
 CURRENT_LOG_FILE = None  # 当前日志文件
-TMP_DIR = "/data/gjw/Meta-IBN/tmp"
 TMP_LOG_PATH_FILE = os.path.join(TMP_DIR, "intent_log_path.txt")
 
 

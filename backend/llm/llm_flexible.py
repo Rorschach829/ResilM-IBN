@@ -1,8 +1,26 @@
-# backend/llm_utils.py
-from typing import Optional
-from openai import OpenAI
+"""
+Flexible LLM interface for ResilM-IBN that supports both cloud APIs and local models
+"""
+import os
 import json
+import logging
+from typing import Optional, Dict, Any, List
+from openai import OpenAI
+import subprocess
 
+# Try to import ollama for local model support
+try:
+    import ollama
+    OLLAMA_AVAILABLE = True
+except ImportError:
+    OLLAMA_AVAILABLE = False
+    logging.info("Ollama not available. Will use cloud APIs only.")
+
+from typing import Union
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from peft import PeftModel
+
+# Current cloud API setup
 #通义千问api
 client = OpenAI(
     # 若没有配置环境变量，请用百炼API Key将下行替换为：api_key="sk-xxx"
@@ -10,10 +28,81 @@ client = OpenAI(
     base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
 )
 
-import json
-import re
-from typing import Any, Union
+def is_local_model_available() -> bool:
+    """Check if local model serving (e.g., Ollama) is available"""
+    try:
+        # Check if ollama is running by trying to list models
+        result = subprocess.run(['ollama', 'list'], capture_output=True, text=True, timeout=5)
+        return result.returncode == 0
+    except:
+        return False
 
+def call_local_model(messages: List[Dict[str, str]], model: str = "deepseek-coder:6.7b", **kwargs) -> str:
+    """Call local model (e.g., via Ollama)"""
+    if not OLLAMA_AVAILABLE:
+        raise RuntimeError("Ollama not available. Please install with 'pip install ollama'")
+
+    try:
+        # Prepare Ollama-compatible messages
+        ollama_messages = []
+        for msg in messages:
+            ollama_messages.append({
+                'role': msg['role'],
+                'content': msg['content']
+            })
+
+        response = ollama.chat(
+            model=model,
+            messages=ollama_messages,
+            options=kwargs  # Pass additional options like temperature, max_tokens, etc.
+        )
+
+        return response['message']['content']
+    except Exception as e:
+        logging.error(f"Error calling local model: {e}")
+        raise
+
+def call_cloud_model(messages: List[Dict[str, str]], model: str = "glm-4.6", **kwargs) -> str:
+    """Call cloud model via API"""
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            **kwargs
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        logging.error(f"Error calling cloud model: {e}")
+        raise
+
+def generate_with_fallback(messages: List[Dict[str, str]],
+                          preferred_model: str = "glm-4.6",
+                          local_model: str = "deepseek-coder:6.7b",
+                          use_local: bool = False,
+                          **kwargs) -> str:
+    """
+    Generate response with fallback from local to cloud models
+
+    Args:
+        messages: Conversation messages
+        preferred_model: Cloud model name
+        local_model: Local model name
+        use_local: Force use of local model if available
+        **kwargs: Additional parameters like temperature, max_tokens, etc.
+
+    Returns:
+        Generated response string
+    """
+    if use_local and is_local_model_available():
+        try:
+            return call_local_model(messages, local_model, **kwargs)
+        except Exception as e:
+            logging.warning(f"Local model failed, falling back to cloud: {e}")
+
+    # Always fall back to cloud model
+    return call_cloud_model(messages, preferred_model, **kwargs)
+
+# The rest of your existing JSON extraction functions remain the same
 class PureJSONExtractError(ValueError):
     """Raised when we cannot extract/repair a valid JSON object/array from raw text."""
     pass
