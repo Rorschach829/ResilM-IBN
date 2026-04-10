@@ -272,3 +272,8 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - OpenAI-compatible API providers for LLM services
 - NetworkX for graph algorithms
 - HuggingFace and PEFT for LoRA implementation support
+
+## 📬 Contact
+
+Feel free to reach out if you're interested in this project or collaboration!
+- Email: arvinkou@outlook.com
